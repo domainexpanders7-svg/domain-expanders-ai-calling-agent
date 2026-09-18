@@ -11,6 +11,9 @@ tests/
 test_*.json
 scratch/
 call recording/
+call recording/**
+*.m4a
+*.m4a.mp4
 
 # Gradle cache
 .gradle/
