@@ -127,6 +127,38 @@ class MainActivity : Activity() {
         }
         layout.addView(restoreDialerBtn)
 
+        // 4. Dual SIM Company vs Personal Routing
+        var companySimSlot = prefs.getInt("COMPANY_SIM_SLOT", -1) // -1 = All, 0 = SIM 1, 1 = SIM 2
+        val simSelectBtn = Button(this).apply {
+            fun updateUi() {
+                text = when (companySimSlot) {
+                    0 -> "🏢 Company SIM: SIM 1 (SIM 2 Personal Ignored)"
+                    1 -> "🏢 Company SIM: SIM 2 (SIM 1 Personal Ignored)"
+                    else -> "🌐 Company SIM: ANY SIM (Single / Both Active)"
+                }
+                setBackgroundColor(if (companySimSlot == -1) android.graphics.Color.parseColor("#334155") else android.graphics.Color.parseColor("#0ea5e9"))
+                setTextColor(android.graphics.Color.WHITE)
+            }
+            updateUi()
+            setOnClickListener {
+                companySimSlot = when (companySimSlot) {
+                    -1 -> 0
+                    0 -> 1
+                    else -> -1
+                }
+                prefs.edit().putInt("COMPANY_SIM_SLOT", companySimSlot).apply()
+                updateUi()
+                val simMsg = when (companySimSlot) {
+                    0 -> "SIM 1 is Company SIM. SIM 2 Personal calls will ring normally!"
+                    1 -> "SIM 2 is Company SIM. SIM 1 Personal calls will ring normally!"
+                    else -> "AI will answer calls on any SIM."
+                }
+                Toast.makeText(this@MainActivity, simMsg, Toast.LENGTH_LONG).show()
+                checkDialerStatus()
+            }
+        }
+        layout.addView(simSelectBtn)
+
         setContentView(layout)
         checkDialerStatus()
     }
@@ -142,15 +174,21 @@ class MainActivity : Activity() {
         val telecomManager = getSystemService(Context.TELECOM_SERVICE) as TelecomManager
         val isDefault = telecomManager.defaultDialerPackage == packageName
         val isAiActive = getSharedPreferences("DE_CALLING_AGENT", Context.MODE_PRIVATE).getBoolean("AI_AUTO_ANSWER_ACTIVE", true)
+        val companySimSlot = getSharedPreferences("DE_CALLING_AGENT", Context.MODE_PRIVATE).getInt("COMPANY_SIM_SLOT", -1)
+        val simTargetText = when (companySimSlot) {
+            0 -> "\nFilter: SIM 1 Company Only (Personal SIM 2 Protected)"
+            1 -> "\nFilter: SIM 2 Company Only (Personal SIM 1 Protected)"
+            else -> "\nFilter: All / Any SIM"
+        }
 
         if (isDefault && isAiActive) {
-            statusView.text = "Status: ACTIVE (AI Agent Auto-Answering Enabled)\nInbound calls are streamed to Gemini Live AI S2S."
+            statusView.text = "Status: ACTIVE (AI Agent Auto-Answering Enabled)$simTargetText\nInbound calls are streamed to Gemini Live AI S2S."
             statusView.setTextColor(android.graphics.Color.parseColor("#10b981"))
         } else if (isDefault && !isAiActive) {
-            statusView.text = "Status: PERSONAL MODE (AI Paused)\nDefault dialer is active, but AI auto-answer is OFF so you can answer calls manually."
+            statusView.text = "Status: PERSONAL MODE (AI Paused)$simTargetText\nDefault dialer is active, but AI auto-answer is OFF so you can answer calls manually."
             statusView.setTextColor(android.graphics.Color.parseColor("#f59e0b"))
         } else {
-            statusView.text = "Status: NOT DEFAULT DIALER\nTap 'Set as Default Phone App' or select 'DE Calling Agent' in Default Apps."
+            statusView.text = "Status: NOT DEFAULT DIALER$simTargetText\nTap 'Set as Default Phone App' or select 'DE Calling Agent' in Default Apps."
             statusView.setTextColor(android.graphics.Color.parseColor("#94a3b8"))
         }
     }

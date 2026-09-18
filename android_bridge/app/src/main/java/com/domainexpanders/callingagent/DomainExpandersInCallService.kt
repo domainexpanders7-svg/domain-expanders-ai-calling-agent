@@ -1,13 +1,18 @@
 package com.domainexpanders.callingagent
 
+import android.content.Context
 import android.media.AudioAttributes
 import android.media.AudioFormat
+import android.media.AudioManager
 import android.media.AudioRecord
 import android.media.AudioTrack
 import android.media.MediaRecorder
+import android.os.Build
 import android.telecom.Call
 import android.telecom.InCallService
 import android.telecom.VideoProfile
+import android.telephony.SubscriptionManager
+import android.telephony.TelephonyManager
 import android.util.Log
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Dispatchers
@@ -69,10 +74,20 @@ class DomainExpandersInCallService : InCallService() {
             return
         }
 
+        // Dual SIM Filtering: Check if call arrived on designated Company SIM
+        val companySimSlot = prefs.getInt("COMPANY_SIM_SLOT", -1) // -1 = All, 0 = SIM 1, 1 = SIM 2
+        if (companySimSlot != -1) {
+            val incomingSlot = getSimSlotForCall(call)
+            if (incomingSlot != null && incomingSlot != companySimSlot) {
+                Log.i(TAG, "🛡️ PERSONAL CALL detected on SIM ${incomingSlot + 1}! Designated Company SIM is SIM ${companySimSlot + 1}. Bypassing AI completely.")
+                return // Leaves personal call ringing normally for phone owner without any disturbance
+            }
+        }
+
         activeCall = call
         val handle = call.details?.handle
         callerPhoneNumber = handle?.schemeSpecificPart ?: ""
-        Log.i(TAG, "Incoming call detected: phone=$callerPhoneNumber, state=${call.state}")
+        Log.i(TAG, "Incoming Company call detected: phone=$callerPhoneNumber, state=${call.state}")
 
         call.registerCallback(object : Call.Callback() {
             override fun onStateChanged(c: Call, state: Int) {
@@ -88,6 +103,39 @@ class DomainExpandersInCallService : InCallService() {
         }
     }
 
+    private fun getSimSlotForCall(call: Call): Int? {
+        try {
+            val accountHandle = call.details?.accountHandle ?: return null
+            val subscriptionManager = getSystemService(Context.TELEPHONY_SUBSCRIPTION_SERVICE) as? SubscriptionManager
+            val subs = subscriptionManager?.activeSubscriptionInfoList ?: return null
+            
+            val accountId = accountHandle.id ?: ""
+            for (sub in subs) {
+                if (sub.subscriptionId.toString() == accountId || sub.iccId == accountId) {
+                    return sub.simSlotIndex
+                }
+            }
+            
+            val telephonyManager = getSystemService(Context.TELEPHONY_SERVICE) as? TelephonyManager
+            if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.R) {
+                val subId = telephonyManager?.getSubscriptionId(accountHandle)
+                if (subId != null && subId != SubscriptionManager.INVALID_SUBSCRIPTION_ID) {
+                    val subInfo = subscriptionManager?.getActiveSubscriptionInfo(subId)
+                    if (subInfo != null) return subInfo.simSlotIndex
+                }
+            }
+            
+            val slotFromId = accountId.toIntOrNull()
+            if (slotFromId != null) {
+                val subInfo = subscriptionManager?.getActiveSubscriptionInfo(slotFromId)
+                if (subInfo != null) return subInfo.simSlotIndex
+            }
+        } catch (e: Exception) {
+            Log.e(TAG, "Error resolving SIM slot for call: ${e.message}")
+        }
+        return null
+    }
+
     override fun onCallRemoved(call: Call) {
         super.onCallRemoved(call)
         Log.i(TAG, "Call ended/removed.")
@@ -97,8 +145,11 @@ class DomainExpandersInCallService : InCallService() {
     }
 
     private fun autoAnswerCall(call: Call) {
-        Log.i(TAG, "Auto-answering incoming client call...")
+        Log.i(TAG, "Auto-answering incoming Company client call quietly in background...")
         try {
+            // Keep phone speaker OFF so phone owner is never disturbed by loud voice
+            val audioManager = getSystemService(Context.AUDIO_SERVICE) as? AudioManager
+            audioManager?.isSpeakerphoneOn = false
             call.answer(VideoProfile.STATE_AUDIO_ONLY)
         } catch (e: Exception) {
             Log.e(TAG, "Error answering call: ${e.message}", e)
