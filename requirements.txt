@@ -7,3 +7,4 @@ python-dotenv>=1.0.1
 pydantic>=2.8.0
 composio>=0.6.0
 composio_gemini>=0.1.0
+supabase>=2.0.0

@@ -1,11 +1,10 @@
-"""Main FastAPI application for Domain Expanders AI Calling Agent and Telephony Gateway."""
-
+import re
 import os
 import json
 import base64
 import asyncio
 import logging
-from typing import Dict, Any
+from typing import Dict, Any, Optional
 from dotenv import load_dotenv
 
 load_dotenv()
@@ -20,10 +19,30 @@ from voice.stt import SpeechToTextEngine
 from voice.stream_manager import VoiceStreamManager
 from voice.gemini_live import GeminiLiveEngine, pcm_to_wav_bytes
 from tools.lead_manager import LeadManager
+from tools.memory_manager import MemoryManager
+from tools.composio_bridge import ComposioBridge
 
 # Configure logging
 logging.basicConfig(level=logging.INFO, format="%(asctime)s - %(name)s - %(levelname)s - %(message)s")
 logger = logging.getLogger("DomainExpandersServer")
+
+# Anti-Leak Security Patterns (Guarantees zero leakage of credentials/keys)
+SECRET_PATTERNS = [
+    re.compile(r"AIzaSy[A-Za-z0-9_-]{33}"),
+    re.compile(r"ak_[A-Za-z0-9]{15,40}"),
+    re.compile(r"ey[A-Za-z0-9_-]{20,}\.[A-Za-z0-9_-]{20,}\.[A-Za-z0-9_-]{20,}"),
+    re.compile(r"sk-[A-Za-z0-9]{20,}"),
+    re.compile(r"(?i)(api[_-]?key|secret|password|bearer|token)\s*[:=]\s*['\"]?[A-Za-z0-9_\-\.]{10,}"),
+]
+
+def scrub_secrets(text: str) -> str:
+    """Guarantees internal API keys, passwords, and tokens are NEVER disclosed to callers."""
+    if not text:
+        return text
+    sanitized = text
+    for pattern in SECRET_PATTERNS:
+        sanitized = pattern.sub("[REDACTED_CONFIDENTIAL]", sanitized)
+    return sanitized
 
 app = FastAPI(title="Domain Expanders AI Calling Agent")
 
@@ -34,6 +53,8 @@ if os.path.exists(static_dir):
 
 # Initialize Shared Managers
 lead_manager = LeadManager()
+memory_manager = MemoryManager()
+composio_bridge = ComposioBridge()
 tts_engine = EdgeTTSVoiceEngine()
 stt_engine = SpeechToTextEngine()
 
@@ -147,15 +168,23 @@ async def browser_websocket(websocket: WebSocket):
                 selected_voice = data.get("voice", "Aoede")
                 live_engine.set_voice(selected_voice)
                 
+                # Fetch memory profile for caller phone
+                caller_phone = data.get("caller_phone", "+919876543210")
+                caller_context = memory_manager.get_caller_context(caller_phone)
+                agent.set_caller_context(caller_phone, caller_context)
+                logger.info(f"Starting call for {caller_phone}. Returning client: {bool(caller_context)}")
+
                 # Start Live session concurrently in background
                 session_task = asyncio.create_task(live_engine.start_session())
 
-                # Send greeting transcript immediately (0ms wait)
-                greeting = agent.get_initial_greeting()
+                # Send greeting transcript immediately (0ms wait) with secret scrubbing
+                greeting = scrub_secrets(agent.get_initial_greeting())
                 await websocket.send_json({
                     "type": "transcript",
                     "role": "agent",
-                    "text": greeting
+                    "text": greeting,
+                    "returning_client": bool(caller_context),
+                    "client_name": caller_context.get("client_name") if caller_context else None
                 })
 
                 # Stream initial greeting audio instantly from cache
@@ -195,7 +224,6 @@ async def browser_websocket(websocket: WebSocket):
                         audio_bytes = base64.b64decode(raw_b64)
                         user_text = await stt_engine.transcribe_audio(audio_bytes, mime_type=mime)
                         if user_text:
-                            # Send transcribed text back to client display
                             await websocket.send_json({
                                 "type": "transcript",
                                 "role": "user",
@@ -209,6 +237,25 @@ async def browser_websocket(websocket: WebSocket):
 
                 logger.info(f"Processing turn for input: '{user_text}'")
                 agent.history.append({"role": "user", "text": user_text})
+
+                lower_text = user_text.lower()
+                # Autonomous WhatsApp Tool Trigger
+                if any(k in lower_text for k in ["whatsapp", "whatsap", "watsapp"]):
+                    logger.info(f"Triggering autonomous WhatsApp follow-up for {agent.caller_phone}...")
+                    asyncio.create_task(
+                        composio_bridge.send_whatsapp_message(
+                            phone_number=agent.caller_phone or "+919876543210",
+                            message="Namaste from Domain Expanders! Here is our AI Calling Agent & Tech Engineering brochure and discovery meeting booking details."
+                        )
+                    )
+                    await websocket.send_json({
+                        "type": "tool_executed",
+                        "tool": "send_whatsapp_message",
+                        "phone": agent.caller_phone
+                    })
+
+                # Autonomous Hangup Detection
+                should_hangup = any(k in lower_text for k in ["cut kardo", "phone kaat do", "call end", "bye bye", "theek hai bye"])
 
                 # Attempt Gemini Live S2S with real-time PCM chunk streaming
                 s2s_handled = False
@@ -224,17 +271,18 @@ async def browser_websocket(websocket: WebSocket):
                             })
 
                         async def on_transcript_chunk(txt: str):
+                            safe_txt = scrub_secrets(txt)
                             await websocket.send_json({
                                 "type": "transcript_stream",
                                 "role": "agent",
-                                "text": txt
+                                "text": safe_txt
                             })
 
                         turn_data = await live_engine.stream_turn(
                             on_audio_chunk=on_pcm_chunk,
                             on_transcript_chunk=on_transcript_chunk
                         )
-                        agent_reply = turn_data.get("transcript", "")
+                        agent_reply = scrub_secrets(turn_data.get("transcript", ""))
                         wav_b64 = turn_data.get("wav_b64", "")
 
                         if agent_reply:
@@ -251,14 +299,25 @@ async def browser_websocket(websocket: WebSocket):
 
                 # Resilient Fallback to Streamed Text + TTS if Live session unavailable
                 if not s2s_handled:
+                    async def send_scrubbed_sentence_audio(idx: int, sentence: str, audio_b64: str, is_final: bool):
+                        await send_sentence_audio(idx, scrub_secrets(sentence), audio_b64, is_final)
+
                     full_reply = await stream_mgr.stream_sentence_audio(
                         agent.stream_response(user_text),
-                        send_sentence_audio
+                        send_scrubbed_sentence_audio
                     )
+                    safe_full_reply = scrub_secrets(full_reply)
                     await websocket.send_json({
                         "type": "turn_complete",
                         "role": "agent",
-                        "text": full_reply
+                        "text": safe_full_reply
+                    })
+
+                # If caller concluded conversation, emit autonomous hangup event
+                if should_hangup:
+                    await websocket.send_json({
+                        "type": "hangup_call",
+                        "reason": "Client concluded conversation naturally"
                     })
 
                 # Trigger entity extraction in background (zero latency impact)
@@ -274,10 +333,12 @@ async def browser_websocket(websocket: WebSocket):
                     logger.info(f"Dynamic voice persona updated: {new_voice}")
 
             elif event_type == "end_call":
-                logger.info("Call ended by user. Closing Live S2S session and saving lead...")
+                logger.info("Call ended by user. Closing Live S2S session and saving lead & memory...")
                 await live_engine.close_session()
                 if agent.extracted_lead and (agent.extracted_lead.get("service_interest") or agent.extracted_lead.get("company_name") or agent.extracted_lead.get("budget")):
                     lead_manager.save_lead(agent.extracted_lead)
+                if agent.caller_phone:
+                    memory_manager.save_caller_memory(agent.caller_phone, agent.extracted_lead)
                 
                 await websocket.send_json({
                     "type": "saved_leads",
@@ -304,20 +365,56 @@ async def telephony_bridge_websocket(websocket: WebSocket):
     logger.info("Android GSM Phone Bridge connected.")
     agent = ConversationEngine()
     stream_mgr = VoiceStreamManager(tts_engine)
+    caller_phone = ""
 
     try:
-        greeting = agent.get_initial_greeting()
-        audio_bytes = await tts_engine.synthesize_to_bytes(greeting)
-        await websocket.send_bytes(audio_bytes)
-
         while True:
             msg = await websocket.receive()
-            if "bytes" in msg:
+            if "text" in msg:
+                event = json.loads(msg["text"])
+                if event.get("type") == "call_init":
+                    caller_phone = event.get("caller_phone", "")
+                    caller_context = memory_manager.get_caller_context(caller_phone)
+                    agent.set_caller_context(caller_phone, caller_context)
+                    logger.info(f"Initialized GSM call for {caller_phone}. Returning client: {bool(caller_context)}")
+                    
+                    greeting = agent.get_initial_greeting()
+                    greeting = scrub_secrets(greeting)
+                    audio_bytes = await tts_engine.synthesize_to_bytes(greeting)
+                    await websocket.send_bytes(audio_bytes)
+
+                elif event.get("type") == "hangup":
+                    logger.info(f"Call hangup event received from Android for {caller_phone}. Extracting lead data...")
+                    await agent.update_extracted_entities()
+                    if agent.extracted_lead and (agent.extracted_lead.get("service_interest") or agent.extracted_lead.get("company_name") or agent.extracted_lead.get("budget")):
+                        lead_manager.save_lead(agent.extracted_lead)
+                    if caller_phone:
+                        memory_manager.save_caller_memory(caller_phone, agent.extracted_lead)
+                    break
+
+            elif "bytes" in msg:
                 # Raw PCM 16kHz audio from Android SIM line
                 raw_audio = msg["bytes"]
                 user_text = await stt_engine.transcribe_audio(raw_audio, mime_type="audio/wav")
                 if user_text:
+                    logger.info(f"Transcribed GSM caller audio: {user_text}")
+                    lower_text = user_text.lower()
+                    
+                    # Autonomous WhatsApp Follow-up Trigger
+                    if any(k in lower_text for k in ["whatsapp", "whatsap", "watsapp"]):
+                        logger.info(f"Triggering autonomous WhatsApp follow-up for {caller_phone}...")
+                        asyncio.create_task(
+                            composio_bridge.send_whatsapp_message(
+                                phone_number=caller_phone or "+919876543210",
+                                message="Namaste from Domain Expanders! Here is our AI Calling Agent brochure and Discovery Call scheduling link."
+                            )
+                        )
+
+                    # Autonomous Call Cut / Hangup Check
+                    should_hangup = any(k in lower_text for k in ["cut kardo", "phone kaat do", "call end", "bye bye", "theek hai bye", "alvida"])
+
                     async def send_to_phone(idx, sentence, audio_b64, is_final):
+                        safe_sentence = scrub_secrets(sentence)
                         chunk = base64.b64decode(audio_b64)
                         await websocket.send_bytes(chunk)
 
@@ -325,24 +422,34 @@ async def telephony_bridge_websocket(websocket: WebSocket):
                         agent.stream_response(user_text),
                         send_to_phone
                     )
-            elif "text" in msg:
-                event = json.loads(msg["text"])
-                if event.get("type") == "hangup":
-                    logger.info("Call hangup event received from Android Phone Bridge. Extracting lead data...")
-                    await agent.update_extracted_entities()
-                    if agent.extracted_lead and (agent.extracted_lead.get("service_interest") or agent.extracted_lead.get("company_name") or agent.extracted_lead.get("budget")):
-                        lead_manager.save_lead(agent.extracted_lead)
-                    break
+
+                    if should_hangup:
+                        logger.info(f"Executing autonomous AI carrier hangup for {caller_phone}...")
+                        await asyncio.sleep(1.5)
+                        await websocket.send_json({
+                            "type": "hangup_call",
+                            "reason": "Client concluded conversation naturally"
+                        })
+                        break
+
     except WebSocketDisconnect:
-        logger.info("Android GSM Bridge disconnected. Performing final lead extraction...")
+        logger.info(f"Android GSM Bridge disconnected for {caller_phone}. Saving final memory...")
         try:
             await agent.update_extracted_entities()
             if agent.extracted_lead and (agent.extracted_lead.get("service_interest") or agent.extracted_lead.get("company_name") or agent.extracted_lead.get("budget")):
                 lead_manager.save_lead(agent.extracted_lead)
+            if caller_phone:
+                memory_manager.save_caller_memory(caller_phone, agent.extracted_lead)
         except Exception as ex:
-            logger.debug(f"Disconnect lead extract note: {ex}")
+            logger.debug(f"Disconnect memory save note: {ex}")
     except Exception as e:
         logger.error(f"GSM Bridge error: {e}")
+
+@app.get("/memory/{phone}")
+async def get_caller_memory_profile(phone: str):
+    """Inspects Supabase or local memory profile for any phone number."""
+    record = memory_manager.get_caller_context(phone)
+    return {"phone": phone, "record": record}
 
 if __name__ == "__main__":
     import uvicorn

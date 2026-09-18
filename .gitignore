@@ -1,6 +1,8 @@
 # Environment variables & secrets
 .env
 *.env.local
+caller_memory.json
+cloudflared.exe
 
 # Gradle cache
 .gradle/

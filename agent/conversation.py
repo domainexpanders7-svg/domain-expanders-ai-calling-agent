@@ -29,6 +29,11 @@ class ConversationEngine:
             "call_summary": "Call in progress..."
         }
         
+        self.caller_phone: Optional[str] = None
+        self.caller_context: Optional[Dict[str, Any]] = None
+        self.last_tool_executed: Optional[Dict[str, Any]] = None
+        self.hangup_requested: bool = False
+        
         if not self.api_key:
             logger.warning("GEMINI_API_KEY is not set. Responses will be simulated until configured.")
             self.client = None
@@ -38,6 +43,10 @@ class ConversationEngine:
     def reset(self):
         """Reset conversation state for a new call."""
         self.history = []
+        self.caller_phone = None
+        self.caller_context = None
+        self.last_tool_executed = None
+        self.hangup_requested = False
         self.extracted_lead = {
             "customer_name": None,
             "company_name": None,
@@ -52,9 +61,44 @@ class ConversationEngine:
             "call_summary": "Call in progress..."
         }
 
+    def set_caller_context(self, phone: str, context: Optional[Dict[str, Any]] = None):
+        """Sets the active caller phone and long-term memory profile."""
+        self.caller_phone = phone
+        self.caller_context = context
+        if phone:
+            self.extracted_lead["phone"] = phone
+        if context and context.get("client_name"):
+            self.extracted_lead["customer_name"] = context.get("client_name")
+        if context and context.get("company_name"):
+            self.extracted_lead["company_name"] = context.get("company_name")
+
+    def get_active_system_prompt(self) -> str:
+        """Dynamically appends returning caller context to the system prompt."""
+        prompt = SYSTEM_PROMPT
+        if self.caller_context:
+            name = self.caller_context.get("client_name") or "Sir/Ma'am"
+            company = self.caller_context.get("company_name")
+            past_service = self.caller_context.get("last_service_interest")
+            past_summary = self.caller_context.get("summary")
+            prompt += f"\n\n### RETURNING CALLER RECOGNITION:\n"
+            prompt += f"- The caller is a RETURNING CLIENT with phone number: {self.caller_phone or 'registered'}.\n"
+            prompt += f"- Client Name: {name}\n"
+            if company:
+                prompt += f"- Company: {company}\n"
+            if past_service:
+                prompt += f"- Past Project Interest: {past_service}\n"
+            if past_summary:
+                prompt += f"- Previous Interaction Summary: {past_summary}\n"
+            prompt += "- Warmly acknowledge their returning status and continue building rapport.\n"
+        return prompt
+
     def get_initial_greeting(self) -> str:
-        """Returns standard warm, natural human greeting for Domain Expanders inbound call."""
-        greeting = "Haanji sir, Namaste! Sneha baat kar rahi hoon Domain Expanders se. Aaj main aapke business ya tech project me kaise help kar sakti hoon?"
+        """Returns personalized greeting if returning client, else standard warm greeting."""
+        if self.caller_context and self.caller_context.get("client_name"):
+            name = self.caller_context.get("client_name")
+            greeting = f"Haanji {name} ji, Namaste! Sneha baat kar rahi hoon Domain Expanders se. Kaise hain aap?"
+        else:
+            greeting = "Haanji sir, Namaste! Sneha baat kar rahi hoon Domain Expanders se. Aaj main aapke business ya tech project me kaise help kar sakti hoon?"
         self.history.append({"role": "model", "text": greeting})
         return greeting
 
@@ -91,7 +135,7 @@ class ConversationEngine:
                         model=m_name,
                         contents=contents,
                         config=types.GenerateContentConfig(
-                            system_instruction=SYSTEM_PROMPT,
+                            system_instruction=self.get_active_system_prompt(),
                             temperature=0.7,
                             max_output_tokens=300,
                         )

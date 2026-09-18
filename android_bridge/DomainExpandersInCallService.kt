@@ -41,6 +41,7 @@ class DomainExpandersInCallService : InCallService() {
     }
 
     private var activeCall: Call? = null
+    private var callerPhoneNumber: String = ""
     private var webSocket: WebSocket? = null
     private var okHttpClient: OkHttpClient? = null
     private val serviceScope = CoroutineScope(Dispatchers.IO + Job())
@@ -61,7 +62,9 @@ class DomainExpandersInCallService : InCallService() {
     override fun onCallAdded(call: Call) {
         super.onCallAdded(call)
         activeCall = call
-        Log.i(TAG, "Incoming call detected: state=${call.state}")
+        val handle = call.details?.handle
+        callerPhoneNumber = handle?.schemeSpecificPart ?: ""
+        Log.i(TAG, "Incoming call detected: phone=$callerPhoneNumber, state=${call.state}")
 
         call.registerCallback(object : Call.Callback() {
             override fun onStateChanged(c: Call, state: Int) {
@@ -82,6 +85,7 @@ class DomainExpandersInCallService : InCallService() {
         Log.i(TAG, "Call ended/removed.")
         stopAudioBridge()
         activeCall = null
+        callerPhoneNumber = ""
     }
 
     private fun autoAnswerCall(call: Call) {
@@ -111,7 +115,7 @@ class DomainExpandersInCallService : InCallService() {
         isStreaming = true
 
         val prefs = getSharedPreferences("DE_CALLING_AGENT", MODE_PRIVATE)
-        val serverWsUrl = prefs.getString("SERVER_WS_URL", "wss://your-space.hf.space/ws/call") ?: "wss://your-space.hf.space/ws/call"
+        val serverWsUrl = prefs.getString("SERVER_WS_URL", "wss://call.domainexpanders.in/ws/call") ?: "wss://call.domainexpanders.in/ws/call"
 
         Log.i(TAG, "Connecting to cloud voice server: $serverWsUrl")
 
@@ -119,6 +123,9 @@ class DomainExpandersInCallService : InCallService() {
         webSocket = okHttpClient?.newWebSocket(request, object : WebSocketListener() {
             override fun onOpen(ws: WebSocket, response: Response) {
                 Log.i(TAG, "Connected to Domain Expanders Cloud Voice Server.")
+                // Send call_init payload with caller's phone number for Supabase memory recognition
+                val initJson = "{\"type\": \"call_init\", \"caller_phone\": \"$callerPhoneNumber\"}"
+                ws.send(initJson)
                 initAudioTrack()
                 startRecordingLoop(ws)
             }
@@ -131,6 +138,16 @@ class DomainExpandersInCallService : InCallService() {
 
             override fun onMessage(ws: WebSocket, text: String) {
                 Log.d(TAG, "Server message: $text")
+                try {
+                    val json = org.json.JSONObject(text)
+                    if (json.optString("type") == "hangup_call") {
+                        val reason = json.optString("reason", "AI concluded call")
+                        Log.i(TAG, "Autonomous AI hangup command received: $reason. Disconnecting carrier call...")
+                        activeCall?.disconnect()
+                    }
+                } catch (e: Exception) {
+                    Log.d(TAG, "Non-JSON server message: $text")
+                }
             }
 
             override fun onFailure(ws: WebSocket, t: Throwable, response: Response?) {

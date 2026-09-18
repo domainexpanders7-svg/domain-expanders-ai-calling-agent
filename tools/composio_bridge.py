@@ -284,3 +284,148 @@ class ComposioBridge:
             "subject": subject,
             "raw_result": result,
         }
+
+    async def send_whatsapp_message(
+        self,
+        phone_number: str,
+        message: str,
+        meeting_link: Optional[str] = None,
+    ) -> Dict[str, Any]:
+        """Sends an autonomous WhatsApp follow-up message with brochure/meeting link via Composio."""
+        clean_phone = "".join(c for c in phone_number if c.isdigit() or c == "+")
+        if not clean_phone.startswith("+") and len(clean_phone) == 10:
+            clean_phone = "+91" + clean_phone
+
+        full_message = message
+        if meeting_link:
+            full_message += f"\n\n🗓️ Google Meet Discovery Call Link: {meeting_link}"
+        full_message += f"\n\nDomain Expanders — Your Domain. Your Empire.\nWebsite: https://www.domainexpanders.in/"
+
+        logger.info(f"Dispatching WhatsApp message to {clean_phone}")
+
+        # Attempt Composio WhatsApp tool
+        result = await self._call_tool(
+            tool_slug="WHATSAPP_SEND_MESSAGE",
+            arguments={
+                "phone_number": clean_phone,
+                "recipient": clean_phone,
+                "message": full_message,
+                "text": full_message
+            },
+            thought=f"Send WhatsApp follow up to client {clean_phone}"
+        )
+
+        return {
+            "success": result.get("success", False),
+            "phone_number": clean_phone,
+            "message": full_message,
+            "raw_result": result
+        }
+
+    async def end_phone_call(
+        self,
+        reason: str = "Client concluded conversation naturally",
+        final_farewell: str = "Bahut shukriya sir! Saari details schedule ho gayi hain. Have a great day!"
+    ) -> Dict[str, Any]:
+        """Signals the telephony bridge or web client to hang up and disconnect the carrier call."""
+        logger.info(f"Autonomous AI Hangup triggered. Reason: {reason}")
+        return {
+            "success": True,
+            "action": "hangup",
+            "reason": reason,
+            "final_farewell": final_farewell
+        }
+
+    async def execute_tool(self, tool_name: str, arguments: Dict[str, Any]) -> Dict[str, Any]:
+        """Dispatches dynamic tool calls executed by the AI model."""
+        logger.info(f"AI requested tool execution: {tool_name} with args: {arguments}")
+
+        if tool_name == "book_calendar_discovery_call":
+            return await self.book_calendar_discovery_call(
+                client_name=arguments.get("client_name", "Valued Client"),
+                client_email=arguments.get("client_email", ""),
+                start_datetime=arguments.get("start_datetime", ""),
+                duration_minutes=arguments.get("duration_minutes", 30),
+                topic=arguments.get("topic", "AI Systems & Scalable Platform Scoping"),
+                notes=arguments.get("notes", "")
+            )
+        elif tool_name == "send_scoping_email":
+            return await self.send_scoping_email(
+                recipient_email=arguments.get("recipient_email", ""),
+                client_name=arguments.get("client_name", "Valued Client"),
+                service_interest=arguments.get("service_interest", "AI Calling Agents & SaaS"),
+                meeting_time=arguments.get("meeting_time", "Scheduled Discovery Session"),
+                meet_link=arguments.get("meet_link", "Google Meet link sent")
+            )
+        elif tool_name == "send_whatsapp_message":
+            return await self.send_whatsapp_message(
+                phone_number=arguments.get("phone_number", ""),
+                message=arguments.get("message", "Namaste from Domain Expanders!"),
+                meeting_link=arguments.get("meeting_link")
+            )
+        elif tool_name == "end_phone_call":
+            return await self.end_phone_call(
+                reason=arguments.get("reason", "Call finished"),
+                final_farewell=arguments.get("final_farewell", "Bahut shukriya sir!")
+            )
+        else:
+            # Fallback to general Composio execution for any other current or future tool
+            return await self._call_tool(tool_slug=tool_name, arguments=arguments)
+
+    def get_tool_declarations(self) -> List[Dict[str, Any]]:
+        """Returns standard Function Declarations for Gemini tools."""
+        return [
+            {
+                "name": "book_calendar_discovery_call",
+                "description": "Books a 30-minute Discovery Scoping Call on Google Calendar with a Google Meet video link.",
+                "parameters": {
+                    "type": "OBJECT",
+                    "properties": {
+                        "client_name": {"type": "STRING", "description": "Name of the client"},
+                        "client_email": {"type": "STRING", "description": "Email of the client for the calendar invite"},
+                        "start_datetime": {"type": "STRING", "description": "ISO datetime string (e.g. 2026-09-20T15:00:00)"},
+                        "duration_minutes": {"type": "INTEGER", "description": "Duration in minutes (default 30)"},
+                        "topic": {"type": "STRING", "description": "Project topic or service interest"}
+                    },
+                    "required": ["client_name", "start_datetime"]
+                }
+            },
+            {
+                "name": "send_whatsapp_message",
+                "description": "Sends a direct WhatsApp message to the caller's mobile number with brochures, meeting links, or scoping details.",
+                "parameters": {
+                    "type": "OBJECT",
+                    "properties": {
+                        "phone_number": {"type": "STRING", "description": "Caller mobile number (e.g. +919876543210)"},
+                        "message": {"type": "STRING", "description": "The message body to send on WhatsApp"},
+                        "meeting_link": {"type": "STRING", "description": "Optional Google Meet link"}
+                    },
+                    "required": ["phone_number", "message"]
+                }
+            },
+            {
+                "name": "send_scoping_email",
+                "description": "Sends a formal discovery scoping briefing email to the client via Gmail.",
+                "parameters": {
+                    "type": "OBJECT",
+                    "properties": {
+                        "recipient_email": {"type": "STRING", "description": "Client email address"},
+                        "client_name": {"type": "STRING", "description": "Client name"},
+                        "service_interest": {"type": "STRING", "description": "Service client is interested in"}
+                    },
+                    "required": ["recipient_email"]
+                }
+            },
+            {
+                "name": "end_phone_call",
+                "description": "Autonomously terminates/cuts the telephone call after saying farewell once the conversation has concluded naturally or the user says goodbye.",
+                "parameters": {
+                    "type": "OBJECT",
+                    "properties": {
+                        "reason": {"type": "STRING", "description": "Reason for ending the call"},
+                        "final_farewell": {"type": "STRING", "description": "The warm final spoken parting words to the caller"}
+                    },
+                    "required": ["reason"]
+                }
+            }
+        ]

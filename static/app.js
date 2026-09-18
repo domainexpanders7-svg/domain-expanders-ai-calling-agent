@@ -262,6 +262,15 @@ function finalizeStreamingMessage(role, fullText) {
 
 function handleServerMessage(data) {
   if (data.type === 'transcript') {
+    const returningBadge = document.getElementById('returningClientBadge');
+    if (returningBadge) {
+      if (data.returning_client) {
+        returningBadge.style.display = 'inline-block';
+        returningBadge.textContent = data.client_name ? `Recognized: ${data.client_name}` : 'Returning Client';
+      } else {
+        returningBadge.style.display = 'none';
+      }
+    }
     appendMessage(data.role, data.text);
   } else if (data.type === 'transcript_stream') {
     // Real-time live transcript words from Gemini
@@ -285,6 +294,16 @@ function handleServerMessage(data) {
       recordAgentUtterance(data.text);
     }
     hasPcmPlayedInTurn = false;
+  } else if (data.type === 'hangup_call') {
+    console.log('AI autonomously ended the call:', data.reason);
+    audioStateText.textContent = `Call concluded by AI (${data.reason || 'Completed'}).`;
+    appendMessage('agent', `[AI Call Cut: ${data.reason || 'Conversation finished'}]`);
+    setTimeout(endCall, 1500);
+  } else if (data.type === 'tool_executed') {
+    if (data.tool === 'send_whatsapp_message') {
+      audioStateText.textContent = `📲 WhatsApp brochure sent to ${data.phone}!`;
+      appendMessage('agent', `[Composio WhatsApp: Automated brochure & meeting invitation dispatched to ${data.phone}]`);
+    }
   } else if (data.lead_update) {
     updateLeadCard(data.lead);
   } else if (data.type === 'lead_update') {
@@ -452,9 +471,11 @@ async function startCall() {
   const isMale = ['Puck', 'Fenrir', 'Charon'].includes(chosenVoice);
   const advisorName = isMale ? 'Rahul' : 'Sneha';
   if (agentNameDisplay) agentNameDisplay.textContent = advisorName;
+  const phoneInput = document.getElementById('callerPhoneInput');
+  const callerPhone = phoneInput ? phoneInput.value.trim() : '+917898832506';
   if (ws && ws.readyState === WebSocket.OPEN) {
     ws.send(JSON.stringify({ type: 'set_voice', voice: chosenVoice }));
-    ws.send(JSON.stringify({ type: 'start_call', voice: chosenVoice }));
+    ws.send(JSON.stringify({ type: 'start_call', voice: chosenVoice, caller_phone: callerPhone }));
   }
   audioStateText.textContent = `Connecting call with ${advisorName}...`;
 
