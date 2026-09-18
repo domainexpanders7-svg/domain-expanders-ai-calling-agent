@@ -367,7 +367,7 @@ async def telephony_bridge_websocket(websocket: WebSocket):
     logger.info("Android GSM Phone Bridge connected.")
     agent = ConversationEngine()
     caller_phone = ""
-    live_engine = GeminiLiveEngine(voice_name="Aoede", system_instruction=agent.get_system_prompt())
+    live_engine = GeminiLiveEngine(voice_name="Aoede", system_instruction=agent.get_active_system_prompt())
     receiver_task: Optional[asyncio.Task] = None
 
     async def gemini_audio_receiver():

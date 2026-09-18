@@ -92,6 +92,10 @@ class ConversationEngine:
             prompt += "- Warmly acknowledge their returning status and continue building rapport.\n"
         return prompt
 
+    def get_system_prompt(self) -> str:
+        """Alias for get_active_system_prompt."""
+        return self.get_active_system_prompt()
+
     def get_initial_greeting(self) -> str:
         """Returns personalized greeting if returning client, else standard warm greeting."""
         if self.caller_context and self.caller_context.get("client_name"):
