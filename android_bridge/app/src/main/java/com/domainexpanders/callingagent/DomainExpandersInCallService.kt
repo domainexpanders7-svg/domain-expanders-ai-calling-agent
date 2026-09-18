@@ -7,6 +7,9 @@ import android.media.AudioManager
 import android.media.AudioRecord
 import android.media.AudioTrack
 import android.media.MediaRecorder
+import android.media.audiofx.AcousticEchoCanceler
+import android.media.audiofx.AutomaticGainControl
+import android.media.audiofx.NoiseSuppressor
 import android.os.Build
 import android.os.Environment
 import android.telecom.Call
@@ -64,6 +67,62 @@ class DomainExpandersInCallService : InCallService() {
     private var audioTrack: AudioTrack? = null
     private var isStreaming = false
     private var callRecorder: CallRecordingManager? = null
+
+    // Hardware Audio Effects for crystal-clear noise cancellation
+    private var echoCanceler: AcousticEchoCanceler? = null
+    private var noiseSuppressor: NoiseSuppressor? = null
+    private var gainControl: AutomaticGainControl? = null
+
+    @Volatile
+    private var lastAiAudioReceivedTime: Long = 0L
+
+    private fun isAiSpeaking(): Boolean {
+        // While AI audio chunk was received within last 650ms, AI is actively speaking on speaker
+        return (System.currentTimeMillis() - lastAiAudioReceivedTime) < 650L
+    }
+
+    private fun calculateRms(pcmData: ByteArray): Double {
+        var sum = 0.0
+        val numSamples = pcmData.size / 2
+        if (numSamples == 0) return 0.0
+        for (i in 0 until pcmData.size - 1 step 2) {
+            val sample = (pcmData[i].toInt() and 0xFF) or (pcmData[i + 1].toInt() shl 8)
+            val shortVal = sample.toShort().toDouble()
+            sum += shortVal * shortVal
+        }
+        return Math.sqrt(sum / numSamples)
+    }
+
+    private fun initAudioEffects(audioSessionId: Int) {
+        try {
+            if (AcousticEchoCanceler.isAvailable()) {
+                echoCanceler = AcousticEchoCanceler.create(audioSessionId)?.apply {
+                    enabled = true
+                    Log.i(TAG, "Hardware AcousticEchoCanceler enabled on session $audioSessionId")
+                }
+            } else {
+                Log.w(TAG, "Hardware AcousticEchoCanceler not available on this device")
+            }
+
+            if (NoiseSuppressor.isAvailable()) {
+                noiseSuppressor = NoiseSuppressor.create(audioSessionId)?.apply {
+                    enabled = true
+                    Log.i(TAG, "Hardware NoiseSuppressor enabled on session $audioSessionId")
+                }
+            } else {
+                Log.w(TAG, "Hardware NoiseSuppressor not available on this device")
+            }
+
+            if (AutomaticGainControl.isAvailable()) {
+                gainControl = AutomaticGainControl.create(audioSessionId)?.apply {
+                    enabled = true
+                    Log.i(TAG, "Hardware AutomaticGainControl enabled on session $audioSessionId")
+                }
+            }
+        } catch (e: Exception) {
+            Log.e(TAG, "Error initializing hardware audio effects: ${e.message}", e)
+        }
+    }
 
     override fun onCreate() {
         super.onCreate()
@@ -278,6 +337,8 @@ class DomainExpandersInCallService : InCallService() {
 
     private fun writeToAudioTrack(pcmData: ByteArray) {
         try {
+            // Keep AI speech activity timestamp updated so mic is muted while speaker plays
+            lastAiAudioReceivedTime = System.currentTimeMillis()
             audioTrack?.write(pcmData, 0, pcmData.size)
         } catch (e: Exception) {
             Log.e(TAG, "Error writing to AudioTrack: ${e.message}")
@@ -301,16 +362,36 @@ class DomainExpandersInCallService : InCallService() {
                     minBufferSize * 2
                 )
 
+                audioRecord?.audioSessionId?.let { sessionId ->
+                    initAudioEffects(sessionId)
+                }
+
                 audioRecord?.startRecording()
-                Log.i(TAG, "AudioRecord started at 16kHz PCM. Streaming caller voice...")
+                Log.i(TAG, "AudioRecord started at 16kHz PCM with Hardware AEC & Noise Suppression.")
 
                 val buffer = ByteArray(BUFFER_SIZE)
                 while (isActive && isStreaming) {
                     val readBytes = audioRecord?.read(buffer, 0, buffer.size) ?: 0
                     if (readBytes > 0) {
                         val payload = buffer.copyOf(readBytes)
-                        ws.send(payload.toByteString())
+
+                        // 1. Always record full raw PCM into on-device call recorder
                         callRecorder?.writePcmChunk(payload)
+
+                        // 2. Acoustic Echo Gate: While AI is speaking on the speaker, MUTE/DROP mic streaming to Gemini Live!
+                        // This completely stops Gemini Live from hearing its own voice, self-interrupting, or getting confused!
+                        if (isAiSpeaking()) {
+                            continue
+                        }
+
+                        // 3. Noise Gate: Suppress low-energy ambient room noise (fan, AC, gentle breathing, faint rustle)
+                        val rms = calculateRms(payload)
+                        if (rms < 180.0) {
+                            continue
+                        }
+
+                        // 4. Send clean caller voice chunk to Gemini Live S2S
+                        ws.send(payload.toByteString())
                     }
                 }
             } catch (e: Exception) {
@@ -322,6 +403,13 @@ class DomainExpandersInCallService : InCallService() {
     private fun stopAudioBridge() {
         isStreaming = false
         try {
+            echoCanceler?.release()
+            echoCanceler = null
+            noiseSuppressor?.release()
+            noiseSuppressor = null
+            gainControl?.release()
+            gainControl = null
+
             webSocket?.send("{\"type\": \"hangup\"}")
             webSocket?.close(1000, "Call ended")
             webSocket = null
