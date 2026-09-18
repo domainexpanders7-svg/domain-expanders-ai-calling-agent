@@ -52,7 +52,7 @@ class MainActivity : Activity() {
         layout.addView(urlLabel)
 
         val prefs = getSharedPreferences("DE_CALLING_AGENT", Context.MODE_PRIVATE)
-        val defaultUrl = prefs.getString("SERVER_WS_URL", "wss://your-space.hf.space/ws/call")
+        val defaultUrl = prefs.getString("SERVER_WS_URL", "wss://call.domainexpanders.in/ws/call") ?: "wss://call.domainexpanders.in/ws/call"
 
         val urlInput = EditText(this).apply {
             setText(defaultUrl)
@@ -74,15 +74,57 @@ class MainActivity : Activity() {
         }
         layout.addView(saveBtn)
 
+        // 1. AI Master On/Off Toggle (Personal Mobile Protection)
+        var isAiActive = prefs.getBoolean("AI_AUTO_ANSWER_ACTIVE", true)
+        val toggleAiBtn = Button(this).apply {
+            fun updateUi() {
+                if (isAiActive) {
+                    text = "🤖 AI Answering: ON (Auto-Handles Client Calls)"
+                    setBackgroundColor(android.graphics.Color.parseColor("#10b981"))
+                } else {
+                    text = "👤 Personal Mode: ON (AI Won't Touch Calls - You Answer)"
+                    setBackgroundColor(android.graphics.Color.parseColor("#f59e0b"))
+                }
+                setTextColor(android.graphics.Color.WHITE)
+            }
+            updateUi()
+            setOnClickListener {
+                isAiActive = !isAiActive
+                prefs.edit().putBoolean("AI_AUTO_ANSWER_ACTIVE", isAiActive).apply()
+                updateUi()
+                val modeMsg = if (isAiActive) "AI Answering Activated!" else "Personal Mode Active! AI will not answer incoming calls."
+                Toast.makeText(this@MainActivity, modeMsg, Toast.LENGTH_SHORT).show()
+            }
+        }
+        layout.addView(toggleAiBtn)
+
+        // 2. Set as Default Dialer Button
         val setDialerBtn = Button(this).apply {
-            text = "Set as Default Phone App (Required)"
-            setBackgroundColor(android.graphics.Color.parseColor("#10b981"))
+            text = "Set as Default Phone App (For AI Mode)"
+            setBackgroundColor(android.graphics.Color.parseColor("#3b82f6"))
             setTextColor(android.graphics.Color.WHITE)
             setOnClickListener {
                 requestDefaultDialerRole()
             }
         }
         layout.addView(setDialerBtn)
+
+        // 3. Switch Back to Normal Personal Dialer Button
+        val restoreDialerBtn = Button(this).apply {
+            text = "📱 Switch / Restore Normal Personal Dialer"
+            setBackgroundColor(android.graphics.Color.parseColor("#64748b"))
+            setTextColor(android.graphics.Color.WHITE)
+            setOnClickListener {
+                try {
+                    val intent = Intent(android.provider.Settings.ACTION_MANAGE_DEFAULT_APPS_SETTINGS)
+                    startActivity(intent)
+                } catch (e: Exception) {
+                    val intent = Intent(android.provider.Settings.ACTION_SETTINGS)
+                    startActivity(intent)
+                }
+            }
+        }
+        layout.addView(restoreDialerBtn)
 
         setContentView(layout)
         checkDialerStatus(statusView)
@@ -91,12 +133,17 @@ class MainActivity : Activity() {
     private fun checkDialerStatus(statusView: TextView) {
         val telecomManager = getSystemService(Context.TELECOM_SERVICE) as TelecomManager
         val isDefault = telecomManager.defaultDialerPackage == packageName
-        if (isDefault) {
-            statusView.text = "Status: ACTIVE (Default Phone Dialer)\nReady to auto-bridge SIM calls to AI S2S"
+        val isAiActive = getSharedPreferences("DE_CALLING_AGENT", Context.MODE_PRIVATE).getBoolean("AI_AUTO_ANSWER_ACTIVE", true)
+
+        if (isDefault && isAiActive) {
+            statusView.text = "Status: ACTIVE (AI Agent Auto-Answering Enabled)\nInbound calls are streamed to Gemini Live AI S2S."
             statusView.setTextColor(android.graphics.Color.parseColor("#10b981"))
-        } else {
-            statusView.text = "Status: NOT DEFAULT DIALER\nClick the button below to enable call interception."
+        } else if (isDefault && !isAiActive) {
+            statusView.text = "Status: PERSONAL MODE (AI Paused)\nDefault dialer is active, but AI auto-answer is OFF so you can answer calls manually."
             statusView.setTextColor(android.graphics.Color.parseColor("#f59e0b"))
+        } else {
+            statusView.text = "Status: NOT DEFAULT DIALER\nTap 'Set as Default Phone App' to enable AI call handling."
+            statusView.setTextColor(android.graphics.Color.parseColor("#94a3b8"))
         }
     }
 

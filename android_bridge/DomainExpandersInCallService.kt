@@ -61,6 +61,14 @@ class DomainExpandersInCallService : InCallService() {
 
     override fun onCallAdded(call: Call) {
         super.onCallAdded(call)
+        val prefs = getSharedPreferences("DE_CALLING_AGENT", MODE_PRIVATE)
+        val isAiActive = prefs.getBoolean("AI_AUTO_ANSWER_ACTIVE", true)
+
+        if (!isAiActive) {
+            Log.i(TAG, "AI Mode is DISABLED (Personal Call Mode). Allowing normal personal call handling.")
+            return
+        }
+
         activeCall = call
         val handle = call.details?.handle
         callerPhoneNumber = handle?.schemeSpecificPart ?: ""
