@@ -370,8 +370,11 @@ async def telephony_bridge_websocket(websocket: WebSocket):
     live_engine = GeminiLiveEngine(voice_name="Aoede", system_instruction=agent.get_active_system_prompt())
     receiver_task: Optional[asyncio.Task] = None
 
+    current_agent_turn_text = []
+
     async def gemini_audio_receiver():
         """Full-duplex receiver: pulls 24kHz PCM and transcript from Gemini Live and streams to phone."""
+        nonlocal current_agent_turn_text
         try:
             async for response in live_engine.session.receive():
                 server_content = response.server_content
@@ -388,11 +391,40 @@ async def telephony_bridge_websocket(websocket: WebSocket):
                 # 2. Live Transcript for logs & analytics
                 if server_content.output_transcription and server_content.output_transcription.text:
                     txt = scrub_secrets(server_content.output_transcription.text)
+                    current_agent_turn_text.append(txt)
                     await websocket.send_json({
                         "type": "transcript",
                         "role": "agent",
                         "text": txt
                     })
+
+                # 3. Intelligent Human Call Conclusion & Hangup Trigger
+                if server_content.turn_complete:
+                    full_turn = " ".join(current_agent_turn_text).lower()
+                    current_agent_turn_text = []
+
+                    farewell_markers = [
+                        "have a wonderful day",
+                        "have a great day",
+                        "have a good day",
+                        "have a nice day",
+                        "take care, bye",
+                        "alvida"
+                    ]
+                    if any(marker in full_turn for marker in farewell_markers):
+                        logger.info(f"Intelligent Call Conclusion Detected: '{full_turn}'. Disconnecting call gracefully...")
+                        # Allow 2.2 seconds for the phone speaker to finish audio playback
+                        async def delayed_hangup():
+                            await asyncio.sleep(2.2)
+                            try:
+                                await websocket.send_json({
+                                    "type": "hangup_call",
+                                    "reason": "Autonomous AI Call Conclusion: " + full_turn[:60]
+                                })
+                            except Exception as he:
+                                logger.debug(f"Hangup dispatch note: {he}")
+
+                        asyncio.create_task(delayed_hangup())
         except asyncio.CancelledError:
             pass
         except Exception as e:
