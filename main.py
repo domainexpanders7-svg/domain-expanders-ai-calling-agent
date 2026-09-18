@@ -466,6 +466,9 @@ async def telephony_bridge_websocket(websocket: WebSocket):
                         except Exception as ge:
                             logger.warning(f"Error triggering S2S initial greeting: {ge}")
 
+                elif event.get("type") == "interrupt":
+                    logger.info(f"Caller interrupted AI speech during GSM call for {caller_phone}.")
+
                 elif event.get("type") == "hangup":
                     logger.info(f"Call hangup event received from Android for {caller_phone}. Extracting lead data...")
                     await agent.update_extracted_entities()
