@@ -8,7 +8,9 @@ import android.media.AudioRecord
 import android.media.AudioTrack
 import android.media.MediaRecorder
 import android.os.Build
+import android.os.Environment
 import android.telecom.Call
+import android.telecom.CallAudioState
 import android.telecom.InCallService
 import android.telecom.VideoProfile
 import android.telephony.SubscriptionManager
@@ -26,15 +28,22 @@ import okhttp3.WebSocket
 import okhttp3.WebSocketListener
 import okio.ByteString
 import okio.ByteString.Companion.toByteString
+import java.io.File
+import java.io.FileOutputStream
+import java.io.RandomAccessFile
+import java.text.SimpleDateFormat
+import java.util.Date
+import java.util.Locale
 import java.util.concurrent.TimeUnit
 
 /**
- * Domain Expanders Production InCallService Telephony Bridge.
+ * Domain Expanders Production InCallService Telephony Bridge & Call Recorder.
  * 
  * Functions:
  * 1. Automatically answers incoming calls on the business SIM (< 1 second).
- * 2. Streams pure digital downlink audio (caller's voice) via 16kHz PCM WebSocket to Cloud Server.
- * 3. Injects AI S2S speech directly into call uplink line (AudioTrack) with 0% room/fan noise.
+ * 2. Streams pure digital downlink audio (caller's voice) via 16kHz PCM WebSocket to Gemini Live.
+ * 3. Plays 24kHz PCM AI voice directly through AudioTrack into the call.
+ * 4. Automatically records both sides of every call to a .wav file on the device for testing & auditing.
  */
 class DomainExpandersInCallService : InCallService() {
 
@@ -54,6 +63,7 @@ class DomainExpandersInCallService : InCallService() {
     private var audioRecord: AudioRecord? = null
     private var audioTrack: AudioTrack? = null
     private var isStreaming = false
+    private var callRecorder: CallRecordingManager? = null
 
     override fun onCreate() {
         super.onCreate()
@@ -145,11 +155,18 @@ class DomainExpandersInCallService : InCallService() {
     }
 
     private fun autoAnswerCall(call: Call) {
-        Log.i(TAG, "Auto-answering incoming Company client call quietly in background...")
+        Log.i(TAG, "Auto-answering incoming Company client call...")
         try {
-            // Keep phone speaker OFF so phone owner is never disturbed by loud voice
+            val prefs = getSharedPreferences("DE_CALLING_AGENT", MODE_PRIVATE)
+            val useSpeaker = prefs.getBoolean("USE_SPEAKERPHONE", true)
+            
             val audioManager = getSystemService(Context.AUDIO_SERVICE) as? AudioManager
-            audioManager?.isSpeakerphoneOn = false
+            audioManager?.mode = AudioManager.MODE_IN_COMMUNICATION
+            audioManager?.isSpeakerphoneOn = useSpeaker
+            
+            if (useSpeaker) {
+                setAudioRoute(CallAudioState.ROUTE_SPEAKER)
+            }
             call.answer(VideoProfile.STATE_AUDIO_ONLY)
         } catch (e: Exception) {
             Log.e(TAG, "Error answering call: ${e.message}", e)
@@ -159,7 +176,7 @@ class DomainExpandersInCallService : InCallService() {
     private fun handleCallState(call: Call, state: Int) {
         when (state) {
             Call.STATE_ACTIVE -> {
-                Log.i(TAG, "Call is ACTIVE. Launching digital audio bridge...")
+                Log.i(TAG, "Call is ACTIVE. Launching digital audio bridge & recorder...")
                 startAudioBridge()
             }
             Call.STATE_DISCONNECTED, Call.STATE_DISCONNECTING -> {
@@ -178,6 +195,12 @@ class DomainExpandersInCallService : InCallService() {
 
         Log.i(TAG, "Connecting to cloud voice server: $serverWsUrl")
 
+        // 1. Initialize On-Device Call Recorder
+        callRecorder = CallRecordingManager(this, callerPhoneNumber).apply {
+            start()
+        }
+
+        // 2. Connect WebSocket
         val request = Request.Builder().url(serverWsUrl).build()
         webSocket = okHttpClient?.newWebSocket(request, object : WebSocketListener() {
             override fun onOpen(ws: WebSocket, response: Response) {
@@ -190,9 +213,10 @@ class DomainExpandersInCallService : InCallService() {
             }
 
             override fun onMessage(ws: WebSocket, bytes: ByteString) {
-                // Incoming AI speech audio (PCM or WAV) from cloud server
+                // Incoming AI speech audio (24kHz PCM) from Gemini Live
                 val audioData = bytes.toByteArray()
                 writeToAudioTrack(audioData)
+                callRecorder?.writePcmChunk(audioData)
             }
 
             override fun onMessage(ws: WebSocket, text: String) {
@@ -246,7 +270,7 @@ class DomainExpandersInCallService : InCallService() {
                 .build()
 
             audioTrack?.play()
-            Log.i(TAG, "AudioTrack initialized and playing.")
+            Log.i(TAG, "AudioTrack initialized and playing at 24kHz PCM.")
         } catch (e: Exception) {
             Log.e(TAG, "Error initializing AudioTrack: ${e.message}", e)
         }
@@ -278,7 +302,7 @@ class DomainExpandersInCallService : InCallService() {
                 )
 
                 audioRecord?.startRecording()
-                Log.i(TAG, "AudioRecord started. Streaming caller downlink audio...")
+                Log.i(TAG, "AudioRecord started at 16kHz PCM. Streaming caller voice...")
 
                 val buffer = ByteArray(BUFFER_SIZE)
                 while (isActive && isStreaming) {
@@ -286,6 +310,7 @@ class DomainExpandersInCallService : InCallService() {
                     if (readBytes > 0) {
                         val payload = buffer.copyOf(readBytes)
                         ws.send(payload.toByteString())
+                        callRecorder?.writePcmChunk(payload)
                     }
                 }
             } catch (e: Exception) {
@@ -308,6 +333,12 @@ class DomainExpandersInCallService : InCallService() {
             audioTrack?.stop()
             audioTrack?.release()
             audioTrack = null
+
+            val savedFile = callRecorder?.stop()
+            callRecorder = null
+            if (savedFile != null) {
+                Log.i(TAG, "✅ Call recording safely saved on phone: $savedFile")
+            }
         } catch (e: Exception) {
             Log.e(TAG, "Cleanup error: ${e.message}")
         }
@@ -317,5 +348,105 @@ class DomainExpandersInCallService : InCallService() {
         super.onDestroy()
         stopAudioBridge()
         Log.i(TAG, "InCallService destroyed.")
+    }
+}
+
+/**
+ * High-performance on-device Call Recording Manager.
+ * Saves both sides of the phone call into standard playable WAV format on the phone.
+ */
+class CallRecordingManager(private val context: Context, private val callerNumber: String) {
+    private var fileOutputStream: FileOutputStream? = null
+    private var outputFile: File? = null
+    private var totalPcmBytes = 0
+    private val sampleRate = 16000
+
+    fun start() {
+        try {
+            val dir = context.getExternalFilesDir(Environment.DIRECTORY_RECORDINGS) ?: context.filesDir
+            dir.mkdirs()
+            val timestamp = SimpleDateFormat("yyyyMMdd_HHmmss", Locale.getDefault()).format(Date())
+            val safePhone = callerNumber.replace("+", "").ifEmpty { "Unknown" }
+            outputFile = File(dir, "Call_${timestamp}_${safePhone}.wav")
+            fileOutputStream = FileOutputStream(outputFile)
+            // 44 dummy bytes for WAV header, will be rewritten upon stop()
+            fileOutputStream?.write(ByteArray(44))
+            totalPcmBytes = 0
+            Log.i("DE_CallRecorder", "Started call recording to: ${outputFile?.absolutePath}")
+        } catch (e: Exception) {
+            Log.e("DE_CallRecorder", "Failed to start call recording: ${e.message}", e)
+        }
+    }
+
+    @Synchronized
+    fun writePcmChunk(pcmData: ByteArray) {
+        try {
+            fileOutputStream?.write(pcmData)
+            totalPcmBytes += pcmData.size
+        } catch (e: Exception) {
+            Log.e("DE_CallRecorder", "Write chunk error: ${e.message}")
+        }
+    }
+
+    fun stop(): String? {
+        try {
+            fileOutputStream?.flush()
+            fileOutputStream?.close()
+            fileOutputStream = null
+
+            val file = outputFile ?: return null
+            if (file.exists() && totalPcmBytes > 0) {
+                RandomAccessFile(file, "rw").use { raf ->
+                    raf.seek(0)
+                    raf.write(createWavHeader(totalPcmBytes, sampleRate, 1, 16))
+                }
+                Log.i("DE_CallRecorder", "Recording finalized: ${file.absolutePath} ($totalPcmBytes bytes)")
+                val prefs = context.getSharedPreferences("DE_CALLING_AGENT", Context.MODE_PRIVATE)
+                prefs.edit()
+                    .putString("LAST_RECORDING_PATH", file.absolutePath)
+                    .putString("LAST_RECORDING_NAME", file.name)
+                    .putLong("LAST_RECORDING_TIME", System.currentTimeMillis())
+                    .apply()
+                return file.absolutePath
+            }
+        } catch (e: Exception) {
+            Log.e("DE_CallRecorder", "Error finalizing recording: ${e.message}", e)
+        }
+        return null
+    }
+
+    private fun createWavHeader(pcmDataSize: Int, sampleRate: Int, channels: Int, bitsPerSample: Int): ByteArray {
+        val totalDataLen = pcmDataSize + 36
+        val byteRate = sampleRate * channels * bitsPerSample / 8
+        val header = ByteArray(44)
+
+        header[0] = 'R'.code.toByte(); header[1] = 'I'.code.toByte(); header[2] = 'F'.code.toByte(); header[3] = 'F'.code.toByte()
+        header[4] = (totalDataLen and 0xff).toByte()
+        header[5] = ((totalDataLen shr 8) and 0xff).toByte()
+        header[6] = ((totalDataLen shr 16) and 0xff).toByte()
+        header[7] = ((totalDataLen shr 24) and 0xff).toByte()
+        header[8] = 'W'.code.toByte(); header[9] = 'A'.code.toByte(); header[10] = 'V'.code.toByte(); header[11] = 'E'.code.toByte()
+
+        header[12] = 'f'.code.toByte(); header[13] = 'm'.code.toByte(); header[14] = 't'.code.toByte(); header[15] = ' '.code.toByte()
+        header[16] = 16; header[17] = 0; header[18] = 0; header[19] = 0
+        header[20] = 1; header[21] = 0 // PCM format
+        header[22] = channels.toByte(); header[23] = 0
+        header[24] = (sampleRate and 0xff).toByte()
+        header[25] = ((sampleRate shr 8) and 0xff).toByte()
+        header[26] = ((sampleRate shr 16) and 0xff).toByte()
+        header[27] = ((sampleRate shr 24) and 0xff).toByte()
+        header[28] = (byteRate and 0xff).toByte()
+        header[29] = ((byteRate shr 8) and 0xff).toByte()
+        header[30] = ((byteRate shr 16) and 0xff).toByte()
+        header[31] = ((byteRate shr 24) and 0xff).toByte()
+        header[32] = ((channels * bitsPerSample) / 8).toByte(); header[33] = 0
+        header[34] = bitsPerSample.toByte(); header[35] = 0
+
+        header[36] = 'd'.code.toByte(); header[37] = 'a'.code.toByte(); header[38] = 't'.code.toByte(); header[39] = 'a'.code.toByte()
+        header[40] = (pcmDataSize and 0xff).toByte()
+        header[41] = ((pcmDataSize shr 8) and 0xff).toByte()
+        header[42] = ((pcmDataSize shr 16) and 0xff).toByte()
+        header[43] = ((pcmDataSize shr 24) and 0xff).toByte()
+        return header
     }
 }

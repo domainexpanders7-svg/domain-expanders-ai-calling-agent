@@ -358,16 +358,54 @@ async def browser_websocket(websocket: WebSocket):
 @app.websocket("/ws/call")
 async def telephony_bridge_websocket(websocket: WebSocket):
     """
-    Dedicated binary PCM streaming endpoint for Android InCallService GSM Gateway.
-    Receives raw 16kHz audio from phone line and returns Edge-TTS audio chunks.
+    Dedicated full-duplex binary PCM streaming endpoint for Android InCallService GSM Gateway.
+    - Receives raw 16kHz PCM from caller's SIM line.
+    - Streams native 24kHz PCM voice from Gemini Live Speech-to-Speech engine.
+    - Full-duplex bidirectional audio: zero lag, instant natural interruptions.
     """
     await websocket.accept()
     logger.info("Android GSM Phone Bridge connected.")
     agent = ConversationEngine()
-    stream_mgr = VoiceStreamManager(tts_engine)
     caller_phone = ""
+    live_engine = GeminiLiveEngine(voice_name="Aoede", system_instruction=agent.get_system_prompt())
+    receiver_task: Optional[asyncio.Task] = None
+
+    async def gemini_audio_receiver():
+        """Full-duplex receiver: pulls 24kHz PCM and transcript from Gemini Live and streams to phone."""
+        try:
+            async for response in live_engine.session.receive():
+                server_content = response.server_content
+                if not server_content:
+                    continue
+
+                # 1. Native Audio Stream (24kHz 16-bit PCM Mono)
+                if server_content.model_turn:
+                    for part in server_content.model_turn.parts:
+                        if part.inline_data and part.inline_data.data:
+                            raw_pcm = part.inline_data.data
+                            await websocket.send_bytes(raw_pcm)
+
+                # 2. Live Transcript for logs & analytics
+                if server_content.output_transcription and server_content.output_transcription.text:
+                    txt = scrub_secrets(server_content.output_transcription.text)
+                    await websocket.send_json({
+                        "type": "transcript",
+                        "role": "agent",
+                        "text": txt
+                    })
+        except asyncio.CancelledError:
+            pass
+        except Exception as e:
+            logger.debug(f"Live S2S receiver closed: {e}")
 
     try:
+        # Connect Gemini Live S2S
+        session_ok = await live_engine.start_session()
+        logger.info(f"Gemini Live session for GSM call initialized (active={session_ok})")
+
+        if session_ok:
+            receiver_task = asyncio.create_task(gemini_audio_receiver())
+
         while True:
             msg = await websocket.receive()
             if "text" in msg:
@@ -380,8 +418,21 @@ async def telephony_bridge_websocket(websocket: WebSocket):
                     
                     greeting = agent.get_initial_greeting()
                     greeting = scrub_secrets(greeting)
-                    audio_bytes = await tts_engine.synthesize_to_bytes(greeting)
-                    await websocket.send_bytes(audio_bytes)
+
+                    await websocket.send_json({
+                        "type": "transcript",
+                        "role": "agent",
+                        "text": greeting,
+                        "returning_client": bool(caller_context),
+                        "client_name": caller_context.get("client_name") if caller_context else None
+                    })
+
+                    # Trigger Gemini Live to speak greeting immediately
+                    if session_ok and live_engine.session:
+                        try:
+                            await live_engine.send_user_text(f"The client just called on the phone line. Speak this greeting clearly right now: {greeting}")
+                        except Exception as ge:
+                            logger.warning(f"Error triggering S2S initial greeting: {ge}")
 
                 elif event.get("type") == "hangup":
                     logger.info(f"Call hangup event received from Android for {caller_phone}. Extracting lead data...")
@@ -395,42 +446,15 @@ async def telephony_bridge_websocket(websocket: WebSocket):
             elif "bytes" in msg:
                 # Raw PCM 16kHz audio from Android SIM line
                 raw_audio = msg["bytes"]
-                user_text = await stt_engine.transcribe_audio(raw_audio, mime_type="audio/wav")
-                if user_text:
-                    logger.info(f"Transcribed GSM caller audio: {user_text}")
-                    lower_text = user_text.lower()
-                    
-                    # Autonomous WhatsApp Follow-up Trigger
-                    if any(k in lower_text for k in ["whatsapp", "whatsap", "watsapp"]):
-                        logger.info(f"Triggering autonomous WhatsApp follow-up for {caller_phone}...")
-                        asyncio.create_task(
-                            composio_bridge.send_whatsapp_message(
-                                phone_number=caller_phone or "+919876543210",
-                                message="Namaste from Domain Expanders! Here is our AI Calling Agent brochure and Discovery Call scheduling link."
-                            )
-                        )
+                if not raw_audio:
+                    continue
 
-                    # Autonomous Call Cut / Hangup Check
-                    should_hangup = any(k in lower_text for k in ["cut kardo", "phone kaat do", "call end", "bye bye", "theek hai bye", "alvida"])
-
-                    async def send_to_phone(idx, sentence, audio_b64, is_final):
-                        safe_sentence = scrub_secrets(sentence)
-                        chunk = base64.b64decode(audio_b64)
-                        await websocket.send_bytes(chunk)
-
-                    await stream_mgr.stream_sentence_audio(
-                        agent.stream_response(user_text),
-                        send_to_phone
-                    )
-
-                    if should_hangup:
-                        logger.info(f"Executing autonomous AI carrier hangup for {caller_phone}...")
-                        await asyncio.sleep(1.5)
-                        await websocket.send_json({
-                            "type": "hangup_call",
-                            "reason": "Client concluded conversation naturally"
-                        })
-                        break
+                # Stream caller's live voice directly into Gemini Live multimodal socket
+                if session_ok and live_engine.session:
+                    try:
+                        await live_engine.send_user_audio(raw_audio)
+                    except Exception as audio_err:
+                        logger.debug(f"Audio streaming error: {audio_err}")
 
     except WebSocketDisconnect:
         logger.info(f"Android GSM Bridge disconnected for {caller_phone}. Saving final memory...")
@@ -444,6 +468,10 @@ async def telephony_bridge_websocket(websocket: WebSocket):
             logger.debug(f"Disconnect memory save note: {ex}")
     except Exception as e:
         logger.error(f"GSM Bridge error: {e}")
+    finally:
+        if receiver_task:
+            receiver_task.cancel()
+        await live_engine.close_session()
 
 @app.get("/memory/{phone}")
 async def get_caller_memory_profile(phone: str):

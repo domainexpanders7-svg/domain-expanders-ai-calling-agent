@@ -4,6 +4,7 @@ import android.app.Activity
 import android.app.role.RoleManager
 import android.content.Context
 import android.content.Intent
+import android.media.MediaPlayer
 import android.os.Build
 import android.os.Bundle
 import android.telecom.TelecomManager
@@ -11,11 +12,14 @@ import android.widget.Button
 import android.widget.EditText
 import android.widget.TextView
 import android.widget.Toast
+import java.io.File
 
 class MainActivity : Activity() {
 
     private val REQUEST_CODE_SET_DEFAULT_DIALER = 1001
     private lateinit var statusView: TextView
+    private lateinit var recordingView: TextView
+    private var mediaPlayer: MediaPlayer? = null
 
     override fun onCreate(savedInstanceState: Bundle?) {
         super.onCreate(savedInstanceState)
@@ -23,7 +27,7 @@ class MainActivity : Activity() {
         // Programmatic UI layout for zero external dependencies
         val layout = android.widget.LinearLayout(this).apply {
             orientation = android.widget.LinearLayout.VERTICAL
-            setPadding(48, 48, 48, 48)
+            setPadding(40, 40, 40, 40)
             setBackgroundColor(android.graphics.Color.parseColor("#0f172a"))
         }
 
@@ -32,58 +36,29 @@ class MainActivity : Activity() {
             textSize = 22f
             setTextColor(android.graphics.Color.WHITE)
             setTypeface(null, android.graphics.Typeface.BOLD)
-            setPadding(0, 0, 0, 32)
+            setPadding(0, 0, 0, 16)
         }
         layout.addView(titleView)
 
         statusView = TextView(this).apply {
-            text = "Status: Checking default dialer permissions..."
-            textSize = 14f
+            text = "Status: Checking telephony state..."
+            textSize = 13f
             setTextColor(android.graphics.Color.parseColor("#94a3b8"))
-            setPadding(0, 0, 0, 48)
+            setPadding(0, 0, 0, 24)
         }
         layout.addView(statusView)
 
-        val urlLabel = TextView(this).apply {
-            text = "Cloud WebSocket Endpoint (wss://.../ws/call):"
-            textSize = 14f
-            setTextColor(android.graphics.Color.parseColor("#cbd5e1"))
-            setPadding(0, 0, 0, 16)
-        }
-        layout.addView(urlLabel)
-
         val prefs = getSharedPreferences("DE_CALLING_AGENT", Context.MODE_PRIVATE)
-        val defaultUrl = prefs.getString("SERVER_WS_URL", "wss://call.domainexpanders.in/ws/call") ?: "wss://call.domainexpanders.in/ws/call"
 
-        val urlInput = EditText(this).apply {
-            setText(defaultUrl)
-            setTextColor(android.graphics.Color.WHITE)
-            setBackgroundColor(android.graphics.Color.parseColor("#1e293b"))
-            setPadding(24, 24, 24, 24)
-        }
-        layout.addView(urlInput)
-
-        val saveBtn = Button(this).apply {
-            text = "Save Endpoint URL"
-            setBackgroundColor(android.graphics.Color.parseColor("#2563eb"))
-            setTextColor(android.graphics.Color.WHITE)
-            setOnClickListener {
-                val url = urlInput.text.toString().trim()
-                prefs.edit().putString("SERVER_WS_URL", url).apply()
-                Toast.makeText(this@MainActivity, "Server URL Saved!", Toast.LENGTH_SHORT).show()
-            }
-        }
-        layout.addView(saveBtn)
-
-        // 1. AI Master On/Off Toggle (Personal Mobile Protection)
+        // 1. Master AI Answering Toggle
         var isAiActive = prefs.getBoolean("AI_AUTO_ANSWER_ACTIVE", true)
         val toggleAiBtn = Button(this).apply {
             fun updateUi() {
                 if (isAiActive) {
-                    text = "🤖 AI Answering: ON (Auto-Handles Client Calls)"
+                    text = "🤖 AI Answering: ON (Auto-Handles Calls)"
                     setBackgroundColor(android.graphics.Color.parseColor("#10b981"))
                 } else {
-                    text = "👤 Personal Mode: ON (AI Won't Touch Calls - You Answer)"
+                    text = "👤 Personal Mode: ON (AI Off - You Answer)"
                     setBackgroundColor(android.graphics.Color.parseColor("#f59e0b"))
                 }
                 setTextColor(android.graphics.Color.WHITE)
@@ -93,47 +68,38 @@ class MainActivity : Activity() {
                 isAiActive = !isAiActive
                 prefs.edit().putBoolean("AI_AUTO_ANSWER_ACTIVE", isAiActive).apply()
                 updateUi()
-                val modeMsg = if (isAiActive) "AI Answering Activated!" else "Personal Mode Active! AI will not answer incoming calls."
+                checkDialerStatus()
+                val modeMsg = if (isAiActive) "AI Answering Activated!" else "Personal Mode Active! AI paused."
                 Toast.makeText(this@MainActivity, modeMsg, Toast.LENGTH_SHORT).show()
             }
         }
         layout.addView(toggleAiBtn)
 
-        // 2. Set as Default Dialer Button
-        val setDialerBtn = Button(this).apply {
-            text = "Set as Default Phone App (For AI Mode)"
-            setBackgroundColor(android.graphics.Color.parseColor("#3b82f6"))
-            setTextColor(android.graphics.Color.WHITE)
+        // 2. Speakerphone Toggle for Loud & Clear Testing
+        var useSpeaker = prefs.getBoolean("USE_SPEAKERPHONE", true)
+        val speakerBtn = Button(this).apply {
+            fun updateUi() {
+                text = if (useSpeaker) "🔊 Audio: Speakerphone ON (Loud & Clear)" else "🔈 Audio: Earpiece Mode (Quiet)"
+                setBackgroundColor(if (useSpeaker) android.graphics.Color.parseColor("#2563eb") else android.graphics.Color.parseColor("#475569"))
+                setTextColor(android.graphics.Color.WHITE)
+            }
+            updateUi()
             setOnClickListener {
-                requestDefaultDialerRole()
+                useSpeaker = !useSpeaker
+                prefs.edit().putBoolean("USE_SPEAKERPHONE", useSpeaker).apply()
+                updateUi()
+                Toast.makeText(this@MainActivity, if (useSpeaker) "Speakerphone ON for calls" else "Earpiece mode ON", Toast.LENGTH_SHORT).show()
             }
         }
-        layout.addView(setDialerBtn)
+        layout.addView(speakerBtn)
 
-        // 3. Switch Back to Normal Personal Dialer Button
-        val restoreDialerBtn = Button(this).apply {
-            text = "📱 Switch / Restore Normal Personal Dialer"
-            setBackgroundColor(android.graphics.Color.parseColor("#64748b"))
-            setTextColor(android.graphics.Color.WHITE)
-            setOnClickListener {
-                try {
-                    val intent = Intent(android.provider.Settings.ACTION_MANAGE_DEFAULT_APPS_SETTINGS)
-                    startActivity(intent)
-                } catch (e: Exception) {
-                    val intent = Intent(android.provider.Settings.ACTION_SETTINGS)
-                    startActivity(intent)
-                }
-            }
-        }
-        layout.addView(restoreDialerBtn)
-
-        // 4. Dual SIM Company vs Personal Routing
+        // 3. Dual SIM Routing Selector
         var companySimSlot = prefs.getInt("COMPANY_SIM_SLOT", -1) // -1 = All, 0 = SIM 1, 1 = SIM 2
         val simSelectBtn = Button(this).apply {
             fun updateUi() {
                 text = when (companySimSlot) {
-                    0 -> "🏢 Company SIM: SIM 1 (SIM 2 Personal Ignored)"
-                    1 -> "🏢 Company SIM: SIM 2 (SIM 1 Personal Ignored)"
+                    0 -> "🏢 Company SIM: SIM 1 (SIM 2 Personal Protected)"
+                    1 -> "🏢 Company SIM: SIM 2 (SIM 1 Personal Protected)"
                     else -> "🌐 Company SIM: ANY SIM (Single / Both Active)"
                 }
                 setBackgroundColor(if (companySimSlot == -1) android.graphics.Color.parseColor("#334155") else android.graphics.Color.parseColor("#0ea5e9"))
@@ -148,25 +114,82 @@ class MainActivity : Activity() {
                 }
                 prefs.edit().putInt("COMPANY_SIM_SLOT", companySimSlot).apply()
                 updateUi()
-                val simMsg = when (companySimSlot) {
-                    0 -> "SIM 1 is Company SIM. SIM 2 Personal calls will ring normally!"
-                    1 -> "SIM 2 is Company SIM. SIM 1 Personal calls will ring normally!"
-                    else -> "AI will answer calls on any SIM."
-                }
-                Toast.makeText(this@MainActivity, simMsg, Toast.LENGTH_LONG).show()
                 checkDialerStatus()
             }
         }
         layout.addView(simSelectBtn)
 
+        // 4. Default Dialer Setting Buttons
+        val setDialerBtn = Button(this).apply {
+            text = "Set as Default Phone App (For AI Mode)"
+            setBackgroundColor(android.graphics.Color.parseColor("#1e40af"))
+            setTextColor(android.graphics.Color.WHITE)
+            setOnClickListener {
+                requestDefaultDialerRole()
+            }
+        }
+        layout.addView(setDialerBtn)
+
+        val restoreDialerBtn = Button(this).apply {
+            text = "📱 Switch / Restore Normal Personal Dialer"
+            setBackgroundColor(android.graphics.Color.parseColor("#64748b"))
+            setTextColor(android.graphics.Color.WHITE)
+            setOnClickListener {
+                openDefaultAppsSettings()
+            }
+        }
+        layout.addView(restoreDialerBtn)
+
+        // 5. Call Recording & Playback Section
+        val recordingTitle = TextView(this).apply {
+            text = "🎙️ On-Device Call Recordings:"
+            textSize = 15f
+            setTextColor(android.graphics.Color.parseColor("#cbd5e1"))
+            setTypeface(null, android.graphics.Typeface.BOLD)
+            setPadding(0, 24, 0, 8)
+        }
+        layout.addView(recordingTitle)
+
+        recordingView = TextView(this).apply {
+            text = "No call recorded yet."
+            textSize = 12f
+            setTextColor(android.graphics.Color.parseColor("#94a3b8"))
+            setPadding(0, 0, 0, 16)
+        }
+        layout.addView(recordingView)
+
+        val playBtn = Button(this).apply {
+            text = "▶ Play Last Call Recording"
+            setBackgroundColor(android.graphics.Color.parseColor("#059669"))
+            setTextColor(android.graphics.Color.WHITE)
+            setOnClickListener {
+                playLastRecording()
+            }
+        }
+        layout.addView(playBtn)
+
+        val stopPlayBtn = Button(this).apply {
+            text = "⏹ Stop Playback"
+            setBackgroundColor(android.graphics.Color.parseColor("#dc2626"))
+            setTextColor(android.graphics.Color.WHITE)
+            setOnClickListener {
+                stopPlaying()
+            }
+        }
+        layout.addView(stopPlayBtn)
+
         setContentView(layout)
         checkDialerStatus()
+        updateRecordingStatus()
     }
 
     override fun onResume() {
         super.onResume()
         if (::statusView.isInitialized) {
             checkDialerStatus()
+        }
+        if (::recordingView.isInitialized) {
+            updateRecordingStatus()
         }
     }
 
@@ -176,9 +199,9 @@ class MainActivity : Activity() {
         val isAiActive = getSharedPreferences("DE_CALLING_AGENT", Context.MODE_PRIVATE).getBoolean("AI_AUTO_ANSWER_ACTIVE", true)
         val companySimSlot = getSharedPreferences("DE_CALLING_AGENT", Context.MODE_PRIVATE).getInt("COMPANY_SIM_SLOT", -1)
         val simTargetText = when (companySimSlot) {
-            0 -> "\nFilter: SIM 1 Company Only (Personal SIM 2 Protected)"
-            1 -> "\nFilter: SIM 2 Company Only (Personal SIM 1 Protected)"
-            else -> "\nFilter: All / Any SIM"
+            0 -> "\nTarget: SIM 1 ONLY (Personal SIM 2 Protected)"
+            1 -> "\nTarget: SIM 2 ONLY (Personal SIM 1 Protected)"
+            else -> "\nTarget: All / Any SIM"
         }
 
         if (isDefault && isAiActive) {
@@ -190,6 +213,57 @@ class MainActivity : Activity() {
         } else {
             statusView.text = "Status: NOT DEFAULT DIALER$simTargetText\nTap 'Set as Default Phone App' or select 'DE Calling Agent' in Default Apps."
             statusView.setTextColor(android.graphics.Color.parseColor("#94a3b8"))
+        }
+    }
+
+    private fun updateRecordingStatus() {
+        val prefs = getSharedPreferences("DE_CALLING_AGENT", Context.MODE_PRIVATE)
+        val lastPath = prefs.getString("LAST_RECORDING_PATH", null)
+        val lastName = prefs.getString("LAST_RECORDING_NAME", null)
+
+        if (lastPath != null && File(lastPath).exists()) {
+            val file = File(lastPath)
+            val sizeKb = file.length() / 1024
+            recordingView.text = "Latest: $lastName ($sizeKb KB)\nPath: $lastPath"
+            recordingView.setTextColor(android.graphics.Color.parseColor("#10b981"))
+        } else {
+            recordingView.text = "No call recording found yet. Calls will be recorded automatically."
+            recordingView.setTextColor(android.graphics.Color.parseColor("#94a3b8"))
+        }
+    }
+
+    private fun playLastRecording() {
+        val prefs = getSharedPreferences("DE_CALLING_AGENT", Context.MODE_PRIVATE)
+        val lastPath = prefs.getString("LAST_RECORDING_PATH", null)
+
+        if (lastPath == null || !File(lastPath).exists()) {
+            Toast.makeText(this, "No recording file available to play!", Toast.LENGTH_SHORT).show()
+            return
+        }
+
+        try {
+            stopPlaying()
+            mediaPlayer = MediaPlayer().apply {
+                setDataSource(lastPath)
+                prepare()
+                start()
+                setOnCompletionListener {
+                    Toast.makeText(this@MainActivity, "Recording playback finished!", Toast.LENGTH_SHORT).show()
+                }
+            }
+            Toast.makeText(this, "Playing recording...", Toast.LENGTH_SHORT).show()
+        } catch (e: Exception) {
+            Toast.makeText(this, "Playback error: ${e.message}", Toast.LENGTH_SHORT).show()
+        }
+    }
+
+    private fun stopPlaying() {
+        try {
+            mediaPlayer?.stop()
+            mediaPlayer?.release()
+            mediaPlayer = null
+        } catch (e: Exception) {
+            // ignore
         }
     }
 
@@ -208,11 +282,10 @@ class MainActivity : Activity() {
                     startActivityForResult(intent, REQUEST_CODE_SET_DEFAULT_DIALER)
                     return
                 } catch (e: Exception) {
-                    // Fallback to default apps settings
+                    // Fallback
                 }
             }
         }
-
         openDefaultAppsSettings()
     }
 
@@ -242,9 +315,13 @@ class MainActivity : Activity() {
                 Toast.makeText(this, "Default Dialer Enabled!", Toast.LENGTH_SHORT).show()
                 checkDialerStatus()
             } else {
-                // If system dialog was cancelled, guide user to system Default Apps page directly
                 openDefaultAppsSettings()
             }
         }
+    }
+
+    override fun onDestroy() {
+        super.onDestroy()
+        stopPlaying()
     }
 }
