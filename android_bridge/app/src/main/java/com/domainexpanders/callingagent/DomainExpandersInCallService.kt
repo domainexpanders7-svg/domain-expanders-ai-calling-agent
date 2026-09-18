@@ -193,10 +193,20 @@ class DomainExpandersInCallService : InCallService() {
         Log.i(TAG, "Telecom onCallAudioStateChanged: route=${audioState?.route}, isMuted=${audioState?.isMuted}")
         val prefs = getSharedPreferences("DE_CALLING_AGENT", MODE_PRIVATE)
         val useSpeaker = prefs.getBoolean("USE_SPEAKERPHONE", true)
-        if (useSpeaker && audioState?.route != CallAudioState.ROUTE_SPEAKER) {
+        val audioManager = getSystemService(Context.AUDIO_SERVICE) as? AudioManager
+        val hasWiredHeadset = audioManager?.isWiredHeadsetOn == true ||
+            (audioState != null && (audioState.supportedRouteMask and CallAudioState.ROUTE_WIRED_HEADSET) != 0)
+
+        if (hasWiredHeadset) {
+            if (audioState?.route != CallAudioState.ROUTE_WIRED_HEADSET) {
+                Log.i(TAG, "Routing call audio to ROUTE_WIRED_HEADSET for loopback earphone...")
+                setAudioRoute(CallAudioState.ROUTE_WIRED_HEADSET)
+                audioManager?.isSpeakerphoneOn = false
+                audioManager?.isMicrophoneMute = false
+            }
+        } else if (useSpeaker && audioState?.route != CallAudioState.ROUTE_SPEAKER) {
             Log.i(TAG, "Enforcing ROUTE_SPEAKER on active call...")
             setAudioRoute(CallAudioState.ROUTE_SPEAKER)
-            val audioManager = getSystemService(Context.AUDIO_SERVICE) as? AudioManager
             audioManager?.isSpeakerphoneOn = true
             audioManager?.isMicrophoneMute = false
         }
@@ -216,11 +226,15 @@ class DomainExpandersInCallService : InCallService() {
             call.answer(VideoProfile.STATE_AUDIO_ONLY)
             val prefs = getSharedPreferences("DE_CALLING_AGENT", MODE_PRIVATE)
             val useSpeaker = prefs.getBoolean("USE_SPEAKERPHONE", true)
-            if (useSpeaker) {
-                setAudioRoute(CallAudioState.ROUTE_SPEAKER)
-            }
             val audioManager = getSystemService(Context.AUDIO_SERVICE) as? AudioManager
-            audioManager?.isSpeakerphoneOn = useSpeaker
+            val hasWiredHeadset = audioManager?.isWiredHeadsetOn == true
+            if (hasWiredHeadset) {
+                setAudioRoute(CallAudioState.ROUTE_WIRED_HEADSET)
+                audioManager?.isSpeakerphoneOn = false
+            } else if (useSpeaker) {
+                setAudioRoute(CallAudioState.ROUTE_SPEAKER)
+                audioManager?.isSpeakerphoneOn = true
+            }
             audioManager?.isMicrophoneMute = false
         } catch (e: Exception) {
             Log.e(TAG, "Error answering call: ${e.message}", e)
@@ -393,12 +407,12 @@ class DomainExpandersInCallService : InCallService() {
                         val rms = calculateRms(payload)
 
                         // 2. Acoustic Echo Gate: While AI is speaking, suppress unless caller speaks with higher energy (barge-in)
-                        if (isAiSpeaking() && rms < 320.0) {
+                        if (isAiSpeaking() && rms < 180.0) {
                             continue
                         }
 
-                        // 3. Noise Gate: Suppress low-energy ambient room silence
-                        if (rms < 120.0) {
+                        // 3. Sensitive Noise Gate for Earphone Acoustic Coupling (20.0 threshold)
+                        if (rms < 20.0) {
                             continue
                         }
 
