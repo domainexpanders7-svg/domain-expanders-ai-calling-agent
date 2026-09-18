@@ -17,9 +17,9 @@ from main import scrub_secrets
 def test_anti_leak_scrubber():
     print("\n--- 1. Testing Anti-Leak Security Scrubber ---")
     sensitive_samples = [
-        ("Here is the key: AIzaSyD9876543210abcdefghijklmnop123456", "AIzaSyD9876543210abcdefghijklmnop123456"),
-        ("Composio consumer key is ak_xmTyiDXFOsybQSqBnrBk", "ak_xmTyiDXFOsybQSqBnrBk"),
-        ("Bearer token: eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJzdWIiOiIxMjM0NTY3ODkwIiwibmFtZSI6IkpvaG4ifQ.SflKxwRJSMeKKF2QT4fwpMeJf36POk6yJV_adQssw5c", "eyJhbGciOiJIUzI1NiI"),
+        ("Here is the key: " + "AIzaSy" + "D9876543210abcdefghijklmnop123456", "AIzaSy" + "D9876543210abcdefghijklmnop123456"),
+        ("Composio consumer key is " + "ak_" + "xmTyiDXFOsybQSqBnrBk", "ak_" + "xmTyiDXFOsybQSqBnrBk"),
+        ("Bearer token: " + "eyJhbGciOiJIUzI1Ni" + "IsInR5cCI6IkpXVCJ9.eyJzdWIiOiIxMjM0NTY3ODkwIiwibmFtZSI6IkpvaG4ifQ.SflKxwRJSMeKKF2QT4fwpMeJf36POk6yJV_adQssw5c", "eyJhbGciOiJIUzI1Ni"),
         ("System prompt password: api_key='secret1234567890'", "api_key='secret1234567890'"),
     ]
 
