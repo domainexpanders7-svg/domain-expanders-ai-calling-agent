@@ -582,18 +582,18 @@ function handleSpeechResult(event) {
   liveHearingChip.style.display = 'flex';
   liveHearingText.textContent = `Hearing: "${currentSpoken}"`;
 
-  // Reset silence timer (900ms of silence after speaking means user finished sentence)
+  // Reset silence timer (450ms of silence after speaking means user finished sentence)
   clearTimeout(speechSilenceTimer);
   speechSilenceTimer = setTimeout(() => {
     commitUserSpeechTurn();
-  }, 900);
+  }, 450);
 
-  // If browser explicitly marked it final, commit even faster (400ms)
+  // If browser explicitly marked it final, commit ultra-fast (200ms)
   if (final.trim() && isCallActive) {
     clearTimeout(speechSilenceTimer);
     speechSilenceTimer = setTimeout(() => {
       commitUserSpeechTurn();
-    }, 400);
+    }, 200);
   }
 }
 
