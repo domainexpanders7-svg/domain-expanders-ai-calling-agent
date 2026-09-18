@@ -95,24 +95,7 @@ class DomainExpandersInCallService : InCallService() {
 
     private fun initAudioEffects(audioSessionId: Int) {
         try {
-            if (AcousticEchoCanceler.isAvailable()) {
-                echoCanceler = AcousticEchoCanceler.create(audioSessionId)?.apply {
-                    enabled = true
-                    Log.i(TAG, "Hardware AcousticEchoCanceler enabled on session $audioSessionId")
-                }
-            } else {
-                Log.w(TAG, "Hardware AcousticEchoCanceler not available on this device")
-            }
-
-            if (NoiseSuppressor.isAvailable()) {
-                noiseSuppressor = NoiseSuppressor.create(audioSessionId)?.apply {
-                    enabled = true
-                    Log.i(TAG, "Hardware NoiseSuppressor enabled on session $audioSessionId")
-                }
-            } else {
-                Log.w(TAG, "Hardware NoiseSuppressor not available on this device")
-            }
-
+            // Keep AutomaticGainControl to boost microphone sensitivity for carrier uplink
             if (AutomaticGainControl.isAvailable()) {
                 gainControl = AutomaticGainControl.create(audioSessionId)?.apply {
                     enabled = true
@@ -120,7 +103,7 @@ class DomainExpandersInCallService : InCallService() {
                 }
             }
         } catch (e: Exception) {
-            Log.e(TAG, "Error initializing hardware audio effects: ${e.message}", e)
+            Log.e(TAG, "Error initializing AGC: ${e.message}", e)
         }
     }
 
@@ -220,8 +203,7 @@ class DomainExpandersInCallService : InCallService() {
             val useSpeaker = prefs.getBoolean("USE_SPEAKERPHONE", true)
             
             val audioManager = getSystemService(Context.AUDIO_SERVICE) as? AudioManager
-            audioManager?.mode = AudioManager.MODE_IN_COMMUNICATION
-            audioManager?.isSpeakerphoneOn = useSpeaker
+            audioManager?.isMicrophoneMute = false
             
             if (useSpeaker) {
                 setAudioRoute(CallAudioState.ROUTE_SPEAKER)
@@ -313,7 +295,7 @@ class DomainExpandersInCallService : InCallService() {
             audioTrack = AudioTrack.Builder()
                 .setAudioAttributes(
                     AudioAttributes.Builder()
-                        .setUsage(AudioAttributes.USAGE_VOICE_COMMUNICATION)
+                        .setUsage(AudioAttributes.USAGE_MEDIA)
                         .setContentType(AudioAttributes.CONTENT_TYPE_SPEECH)
                         .build()
                 )
@@ -328,8 +310,13 @@ class DomainExpandersInCallService : InCallService() {
                 .setTransferMode(AudioTrack.MODE_STREAM)
                 .build()
 
+            // Maximize media loudspeaker volume so AI speech enters the carrier microphone crystal-clearly
+            val audioManager = getSystemService(Context.AUDIO_SERVICE) as? AudioManager
+            val maxVol = audioManager?.getStreamMaxVolume(AudioManager.STREAM_MUSIC) ?: 15
+            audioManager?.setStreamVolume(AudioManager.STREAM_MUSIC, maxVol, 0)
+
             audioTrack?.play()
-            Log.i(TAG, "AudioTrack initialized and playing at 24kHz PCM.")
+            Log.i(TAG, "AudioTrack initialized and playing at 24kHz PCM at MAX volume.")
         } catch (e: Exception) {
             Log.e(TAG, "Error initializing AudioTrack: ${e.message}", e)
         }
@@ -403,10 +390,6 @@ class DomainExpandersInCallService : InCallService() {
     private fun stopAudioBridge() {
         isStreaming = false
         try {
-            echoCanceler?.release()
-            echoCanceler = null
-            noiseSuppressor?.release()
-            noiseSuppressor = null
             gainControl?.release()
             gainControl = null
 
