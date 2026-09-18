@@ -1,0 +1,169 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>Domain Expanders AI Calling Agent Simulator</title>
+  <link rel="preconnect" href="https://fonts.googleapis.com">
+  <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+  <link href="https://fonts.googleapis.com/css2?family=Outfit:wght@300;400;500;600;700&family=Plus+Jakarta+Sans:wght@400;500;600;700&display=swap" rel="stylesheet">
+  <link rel="icon" href="data:image/svg+xml,<svg xmlns=%22http://www.w3.org/2000/svg%22 viewBox=%220 0 100 100%22><text y=%22.9em%22 font-size=%2290%22>🌐</text></svg>">
+  <link rel="stylesheet" href="/static/style.css">
+</head>
+<body>
+  <div class="app-container">
+    <!-- Header -->
+    <header class="header">
+      <div class="brand">
+        <div class="logo-badge">DE</div>
+        <div class="brand-text">
+          <h1>Domain Expanders</h1>
+          <span class="subtext">AI Calling Agent & Tech Consulting • Gemini 2.5 Native S2S</span>
+        </div>
+      </div>
+      <div class="header-status">
+        <span class="status-dot disconnected" id="connectionDot"></span>
+        <span class="status-label" id="connectionStatus">Ready to Connect</span>
+      </div>
+    </header>
+
+    <!-- Main Workspace -->
+    <main class="main-grid">
+      <!-- Left Column: Voice Phone Interface -->
+      <section class="card phone-interface">
+        <div class="phone-screen">
+          <div class="agent-avatar-container">
+            <div class="pulse-ring" id="pulseRing"></div>
+            <div class="avatar-circle">
+              <span class="avatar-initials">DE</span>
+            </div>
+          </div>
+          <div class="agent-info">
+            <h2 class="agent-name" id="agentNameDisplay">Sneha</h2>
+            <p class="agent-role">Senior AI Solutions Consultant • Domain Expanders</p>
+            <div class="call-timer" id="callTimer">00:00</div>
+            <div class="voice-picker-row">
+              <label for="voiceSelect" class="voice-label">S2S Voice:</label>
+              <select id="voiceSelect" class="voice-dropdown" title="Choose Gemini Native S2S Voice Persona">
+                <option value="Aoede" selected>👩 Sneha (Gemini S2S - Warm & Natural Female)</option>
+                <option value="Kore">👩 Sneha (Gemini S2S - Friendly & Soothing Female)</option>
+                <option value="Puck">👨 Rahul (Gemini S2S - Energetic & Confident Male)</option>
+                <option value="Fenrir">👨 Rahul (Gemini S2S - Deep & Authoritative Male)</option>
+                <option value="Charon">👨 Rahul (Gemini S2S - Calm & Professional Male)</option>
+              </select>
+            </div>
+          </div>
+
+          <!-- Audio Waveform Visualizer -->
+          <div class="visualizer-container">
+            <div class="mic-status-row">
+              <span class="mic-badge" id="micBadge">🎙️ Mic: Ready</span>
+              <span class="badge-echo" id="echoShieldBadge" title="Prevents Sneha from interrupting herself on laptop speakers">🛡️ Anti-Echo Active</span>
+              <select id="langSelect" class="lang-dropdown" title="Speech Recognition Language">
+                <option value="hi-IN" selected>Hindi / Hinglish (hi-IN)</option>
+                <option value="en-IN">Indian English (en-IN)</option>
+              </select>
+            </div>
+            <canvas id="audioVisualizer"></canvas>
+            <p class="audio-state-text" id="audioStateText">Click "Start Call" to begin speaking</p>
+            <div class="live-hearing-chip" id="liveHearingChip" style="display:none;">
+              <span class="pulse-dot"></span>
+              <span id="liveHearingText">Hearing you...</span>
+            </div>
+          </div>
+
+          <!-- Controls -->
+          <div class="controls-row">
+            <button id="startCallBtn" class="btn btn-call">
+              <svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M22 16.92v3a2 2 0 0 1-2.18 2 19.79 19.79 0 0 1-8.63-3.07 19.5 19.5 0 0 1-6-6 19.79 19.79 0 0 1-3.07-8.67A2 2 0 0 1 4.11 2h3a2 2 0 0 1 2 1.72 12.84 12.84 0 0 0 .7 2.81 2 2 0 0 1-.45 2.11L8.09 9.91a16 16 0 0 0 6 6l1.27-1.27a2 2 0 0 1 2.11-.45 12.84 12.84 0 0 0 2.81.7A2 2 0 0 1 22 16.92z"></path></svg>
+              <span>Start Call</span>
+            </button>
+            <button id="interruptBtn" class="btn btn-interrupt" disabled title="Interrupt Sneha while speaking (or press Spacebar)">
+              <svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><circle cx="12" cy="12" r="10"></circle><line x1="10" y1="15" x2="10" y2="9"></line><line x1="14" y1="15" x2="14" y2="9"></line></svg>
+              <span>Interrupt</span>
+            </button>
+            <button id="endCallBtn" class="btn btn-end" disabled>
+              <svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M10.68 13.31a16 16 0 0 0 3.41 2.6l1.27-1.27a2 2 0 0 1 2.11-.45 12.84 12.84 0 0 0 2.81.7 2 2 0 0 1 1.72 2v3a2 2 0 0 1-2.18 2 19.79 19.79 0 0 1-8.63-3.07 19.42 19.42 0 0 1-3.33-2.67m-2.67-3.34a19.79 19.79 0 0 1-3.07-8.63A2 2 0 0 1 4.11 2h3a2 2 0 0 1 2 1.72 12.84 12.84 0 0 0 .7 2.81 2 2 0 0 1-.45 2.11L8.09 9.91"></path><line x1="23" y1="1" x2="1" y2="23"></line></svg>
+              <span>End Call</span>
+            </button>
+          </div>
+
+          <!-- Quick Text Input Fallback / Simulation -->
+          <div class="chat-input-row">
+            <input type="text" id="textInput" placeholder="Or type your message in Hinglish..." disabled>
+            <button id="sendTextBtn" class="btn btn-icon" disabled>
+              <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><line x1="22" y1="2" x2="11" y2="13"></line><polygon points="22 2 15 22 11 13 2 9 22 2"></polygon></svg>
+            </button>
+          </div>
+        </div>
+      </section>
+
+      <!-- Center Column: Live Transcript -->
+      <section class="card transcript-section">
+        <div class="card-header">
+          <h3>Live Conversation Transcript</h3>
+          <span class="badge">Real-time</span>
+        </div>
+        <div class="transcript-box" id="transcriptBox">
+          <div class="empty-state" id="emptyTranscript">
+            <svg width="40" height="40" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.5"><path d="M21 15a2 2 0 0 1-2 2H7l-4 4V5a2 2 0 0 1 2-2h14a2 2 0 0 1 2 2z"></path></svg>
+            <p>Start a call or send a message to see the conversation stream live.</p>
+          </div>
+        </div>
+      </section>
+
+      <!-- Right Column: Extracted Lead Intelligence -->
+      <section class="card lead-section">
+        <div class="card-header">
+          <h3>Extracted Lead Intelligence</h3>
+          <span class="badge badge-accent" id="leadStageBadge">Waiting for Call</span>
+        </div>
+
+        <div class="lead-details-grid">
+          <div class="lead-field">
+            <span class="field-label">Client Name</span>
+            <span class="field-value" id="valName">—</span>
+          </div>
+          <div class="lead-field">
+            <span class="field-label">Company / Business</span>
+            <span class="field-value highlight" id="valCompany">—</span>
+          </div>
+          <div class="lead-field">
+            <span class="field-label">Service Interest</span>
+            <span class="field-value highlight" id="valService">—</span>
+          </div>
+          <div class="lead-field">
+            <span class="field-label">Budget Range</span>
+            <span class="field-value" id="valBudget">—</span>
+          </div>
+          <div class="lead-field">
+            <span class="field-label">Project Timeline</span>
+            <span class="field-value" id="valTimeline">—</span>
+          </div>
+          <div class="lead-field">
+            <span class="field-label">Discovery Call Booked</span>
+            <span class="field-value status-tag" id="valDiscoveryCall">No</span>
+          </div>
+          <div class="lead-field full-width">
+            <span class="field-label">Meeting Date & Time</span>
+            <span class="field-value" id="valMeetingTime">—</span>
+          </div>
+          <div class="lead-field full-width">
+            <span class="field-label">Live Call Summary</span>
+            <p class="field-summary" id="valSummary">No active call summary yet.</p>
+          </div>
+        </div>
+
+        <!-- Saved Leads Log -->
+        <div class="saved-leads-box">
+          <h4>Recent Saved Prospects (Leads.json)</h4>
+          <div class="leads-list" id="savedLeadsList">
+            <div class="empty-mini">No saved prospects yet. Complete a call to log data.</div>
+          </div>
+        </div>
+    </main>
+  </div>
+
+  <script src="/static/app.js"></script>
+</body>
+</html>

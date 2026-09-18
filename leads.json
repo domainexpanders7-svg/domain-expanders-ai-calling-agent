@@ -1,0 +1,45 @@
+[
+  {
+    "customer_name": "Amit Verma",
+    "company_name": "FinScale Tech",
+    "phone": "+91 98765 43210",
+    "service_interest": "AI Voice Calling Agent & Workflow Automation",
+    "project_scope": "Automate 5,000+ daily inbound lead qualification calls with Gemini S2S",
+    "budget": "₹3.5 - 5 Lakhs",
+    "timeline": "Immediate (within 2-3 weeks)",
+    "discovery_call_scheduled": true,
+    "visit_date_time": "Tomorrow at 4:00 PM (Google Meet)",
+    "lead_stage": "Discovery Call Scheduled",
+    "call_summary": "Client needs an AI voice calling agent integrated with their CRM for immediate deployment. Scheduled a 30-min discovery call.",
+    "timestamp": "2026-09-18 04:30:00",
+    "id": "DE-1789685400"
+  },
+  {
+    "customer_name": "Rohan Sharma",
+    "company_name": "TechCorp Solutions",
+    "service_interest": "AI Voice Calling Agent",
+    "project_scope": "Inbound customer support automation",
+    "budget": "2-3 Lakhs",
+    "timeline": "Immediate (2 weeks)",
+    "discovery_call_scheduled": true,
+    "visit_date_time": "Friday 4:00 PM",
+    "lead_stage": "Discovery Call Scheduled",
+    "call_summary": "Wants an AI calling agent for customer support.",
+    "timestamp": "2026-09-18 05:18:37",
+    "id": "DE-1789688917"
+  },
+  {
+    "customer_name": "Rohan Sharma",
+    "company_name": "TechCorp Solutions",
+    "service_interest": "AI Voice Calling Agent",
+    "project_scope": "Inbound customer support automation",
+    "budget": "2-3 Lakhs",
+    "timeline": "Immediate (2 weeks)",
+    "discovery_call_scheduled": true,
+    "visit_date_time": "Friday 4:00 PM",
+    "lead_stage": "Discovery Call Scheduled",
+    "call_summary": "Wants an AI calling agent for customer support.",
+    "timestamp": "2026-09-18 05:18:52",
+    "id": "DE-1789688932"
+  }
+]

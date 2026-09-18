@@ -1,0 +1,17 @@
+services:
+  - type: web
+    name: domain-expanders-ai-agent
+    env: docker
+    plan: free
+    region: oregon
+    autoDeploy: true
+    healthCheckPath: /health
+    envVars:
+      - key: GEMINI_API_KEY
+        sync: false
+      - key: COMPOSIO_API_KEY
+        sync: false
+      - key: DEFAULT_VOICE
+        value: Aoede
+      - key: RELOAD
+        value: "false"
