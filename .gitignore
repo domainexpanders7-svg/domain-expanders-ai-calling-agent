@@ -4,6 +4,13 @@
 caller_memory.json
 cloudflared.exe
 
+# Testing & Scratch files
+test_*.py
+*_test.py
+tests/
+test_*.json
+scratch/
+
 # Gradle cache
 .gradle/
 build/
