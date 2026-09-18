@@ -77,8 +77,8 @@ class DomainExpandersInCallService : InCallService() {
     private var lastAiAudioReceivedTime: Long = 0L
 
     private fun isAiSpeaking(): Boolean {
-        // While AI audio chunk was received within last 650ms, AI is actively speaking on speaker
-        return (System.currentTimeMillis() - lastAiAudioReceivedTime) < 650L
+        // While AI audio chunk was received within last 250ms, AI is actively speaking on speaker
+        return (System.currentTimeMillis() - lastAiAudioReceivedTime) < 250L
     }
 
     private fun calculateRms(pcmData: ByteArray): Double {
@@ -188,6 +188,20 @@ class DomainExpandersInCallService : InCallService() {
         return null
     }
 
+    override fun onCallAudioStateChanged(audioState: CallAudioState?) {
+        super.onCallAudioStateChanged(audioState)
+        Log.i(TAG, "Telecom onCallAudioStateChanged: route=${audioState?.route}, isMuted=${audioState?.isMuted}")
+        val prefs = getSharedPreferences("DE_CALLING_AGENT", MODE_PRIVATE)
+        val useSpeaker = prefs.getBoolean("USE_SPEAKERPHONE", true)
+        if (useSpeaker && audioState?.route != CallAudioState.ROUTE_SPEAKER) {
+            Log.i(TAG, "Enforcing ROUTE_SPEAKER on active call...")
+            setAudioRoute(CallAudioState.ROUTE_SPEAKER)
+            val audioManager = getSystemService(Context.AUDIO_SERVICE) as? AudioManager
+            audioManager?.isSpeakerphoneOn = true
+            audioManager?.isMicrophoneMute = false
+        }
+    }
+
     override fun onCallRemoved(call: Call) {
         super.onCallRemoved(call)
         Log.i(TAG, "Call ended/removed.")
@@ -199,16 +213,15 @@ class DomainExpandersInCallService : InCallService() {
     private fun autoAnswerCall(call: Call) {
         Log.i(TAG, "Auto-answering incoming Company client call...")
         try {
+            call.answer(VideoProfile.STATE_AUDIO_ONLY)
             val prefs = getSharedPreferences("DE_CALLING_AGENT", MODE_PRIVATE)
             val useSpeaker = prefs.getBoolean("USE_SPEAKERPHONE", true)
-            
-            val audioManager = getSystemService(Context.AUDIO_SERVICE) as? AudioManager
-            audioManager?.isMicrophoneMute = false
-            
             if (useSpeaker) {
                 setAudioRoute(CallAudioState.ROUTE_SPEAKER)
             }
-            call.answer(VideoProfile.STATE_AUDIO_ONLY)
+            val audioManager = getSystemService(Context.AUDIO_SERVICE) as? AudioManager
+            audioManager?.isSpeakerphoneOn = useSpeaker
+            audioManager?.isMicrophoneMute = false
         } catch (e: Exception) {
             Log.e(TAG, "Error answering call: ${e.message}", e)
         }
@@ -218,6 +231,18 @@ class DomainExpandersInCallService : InCallService() {
         when (state) {
             Call.STATE_ACTIVE -> {
                 Log.i(TAG, "Call is ACTIVE. Launching digital audio bridge & recorder...")
+                val prefs = getSharedPreferences("DE_CALLING_AGENT", MODE_PRIVATE)
+                val useSpeaker = prefs.getBoolean("USE_SPEAKERPHONE", true)
+                if (useSpeaker) {
+                    setAudioRoute(CallAudioState.ROUTE_SPEAKER)
+                }
+                val audioManager = getSystemService(Context.AUDIO_SERVICE) as? AudioManager
+                audioManager?.isSpeakerphoneOn = useSpeaker
+                audioManager?.isMicrophoneMute = false
+                val maxVoice = audioManager?.getStreamMaxVolume(AudioManager.STREAM_VOICE_CALL) ?: 15
+                audioManager?.setStreamVolume(AudioManager.STREAM_VOICE_CALL, maxVoice, 0)
+                val maxMusic = audioManager?.getStreamMaxVolume(AudioManager.STREAM_MUSIC) ?: 15
+                audioManager?.setStreamVolume(AudioManager.STREAM_MUSIC, maxMusic, 0)
                 startAudioBridge()
             }
             Call.STATE_DISCONNECTED, Call.STATE_DISCONNECTING -> {
@@ -295,7 +320,7 @@ class DomainExpandersInCallService : InCallService() {
             audioTrack = AudioTrack.Builder()
                 .setAudioAttributes(
                     AudioAttributes.Builder()
-                        .setUsage(AudioAttributes.USAGE_MEDIA)
+                        .setUsage(AudioAttributes.USAGE_VOICE_COMMUNICATION)
                         .setContentType(AudioAttributes.CONTENT_TYPE_SPEECH)
                         .build()
                 )
@@ -310,10 +335,11 @@ class DomainExpandersInCallService : InCallService() {
                 .setTransferMode(AudioTrack.MODE_STREAM)
                 .build()
 
-            // Maximize media loudspeaker volume so AI speech enters the carrier microphone crystal-clearly
             val audioManager = getSystemService(Context.AUDIO_SERVICE) as? AudioManager
-            val maxVol = audioManager?.getStreamMaxVolume(AudioManager.STREAM_MUSIC) ?: 15
-            audioManager?.setStreamVolume(AudioManager.STREAM_MUSIC, maxVol, 0)
+            val maxVoice = audioManager?.getStreamMaxVolume(AudioManager.STREAM_VOICE_CALL) ?: 15
+            audioManager?.setStreamVolume(AudioManager.STREAM_VOICE_CALL, maxVoice, 0)
+            val maxMusic = audioManager?.getStreamMaxVolume(AudioManager.STREAM_MUSIC) ?: 15
+            audioManager?.setStreamVolume(AudioManager.STREAM_MUSIC, maxMusic, 0)
 
             audioTrack?.play()
             Log.i(TAG, "AudioTrack initialized and playing at 24kHz PCM at MAX volume.")
@@ -324,7 +350,6 @@ class DomainExpandersInCallService : InCallService() {
 
     private fun writeToAudioTrack(pcmData: ByteArray) {
         try {
-            // Keep AI speech activity timestamp updated so mic is muted while speaker plays
             lastAiAudioReceivedTime = System.currentTimeMillis()
             audioTrack?.write(pcmData, 0, pcmData.size)
         } catch (e: Exception) {
@@ -342,7 +367,7 @@ class DomainExpandersInCallService : InCallService() {
                 )
 
                 audioRecord = AudioRecord(
-                    MediaRecorder.AudioSource.VOICE_COMMUNICATION,
+                    MediaRecorder.AudioSource.VOICE_RECOGNITION,
                     SAMPLE_RATE_IN,
                     AudioFormat.CHANNEL_IN_MONO,
                     AudioFormat.ENCODING_PCM_16BIT,
@@ -354,7 +379,7 @@ class DomainExpandersInCallService : InCallService() {
                 }
 
                 audioRecord?.startRecording()
-                Log.i(TAG, "AudioRecord started at 16kHz PCM with Hardware AEC & Noise Suppression.")
+                Log.i(TAG, "AudioRecord started at 16kHz PCM (VOICE_RECOGNITION).")
 
                 val buffer = ByteArray(BUFFER_SIZE)
                 while (isActive && isStreaming) {
@@ -365,15 +390,15 @@ class DomainExpandersInCallService : InCallService() {
                         // 1. Always record full raw PCM into on-device call recorder
                         callRecorder?.writePcmChunk(payload)
 
-                        // 2. Acoustic Echo Gate: While AI is speaking on the speaker, MUTE/DROP mic streaming to Gemini Live!
-                        // This completely stops Gemini Live from hearing its own voice, self-interrupting, or getting confused!
-                        if (isAiSpeaking()) {
+                        val rms = calculateRms(payload)
+
+                        // 2. Acoustic Echo Gate: While AI is speaking, suppress unless caller speaks with higher energy (barge-in)
+                        if (isAiSpeaking() && rms < 320.0) {
                             continue
                         }
 
-                        // 3. Noise Gate: Suppress low-energy ambient room noise (fan, AC, gentle breathing, faint rustle)
-                        val rms = calculateRms(payload)
-                        if (rms < 180.0) {
+                        // 3. Noise Gate: Suppress low-energy ambient room silence
+                        if (rms < 120.0) {
                             continue
                         }
 
