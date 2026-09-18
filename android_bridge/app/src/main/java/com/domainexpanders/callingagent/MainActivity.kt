@@ -24,6 +24,19 @@ class MainActivity : Activity() {
     override fun onCreate(savedInstanceState: Bundle?) {
         super.onCreate(savedInstanceState)
 
+        // Ensure runtime permissions for microphone and phone state are requested
+        val requiredPerms = arrayOf(
+            android.Manifest.permission.RECORD_AUDIO,
+            android.Manifest.permission.READ_PHONE_STATE,
+            android.Manifest.permission.MODIFY_AUDIO_SETTINGS
+        )
+        val missingPerms = requiredPerms.filter {
+            checkSelfPermission(it) != android.content.pm.PackageManager.PERMISSION_GRANTED
+        }
+        if (missingPerms.isNotEmpty()) {
+            requestPermissions(missingPerms.toTypedArray(), 2002)
+        }
+
         // Programmatic UI layout for zero external dependencies
         val layout = android.widget.LinearLayout(this).apply {
             orientation = android.widget.LinearLayout.VERTICAL

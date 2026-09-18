@@ -14,6 +14,7 @@ call recording/
 call recording/**
 *.m4a
 *.m4a.mp4
+*.wav
 
 # Gradle cache
 .gradle/

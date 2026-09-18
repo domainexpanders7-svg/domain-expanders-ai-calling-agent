@@ -130,15 +130,30 @@ class DomainExpandersInCallService : InCallService() {
 
     private fun initAudioEffects(audioSessionId: Int) {
         try {
-            // Keep AutomaticGainControl to boost microphone sensitivity for carrier uplink
+            if (AcousticEchoCanceler.isAvailable()) {
+                echoCanceler = AcousticEchoCanceler.create(audioSessionId)?.apply {
+                    enabled = true
+                    Log.i(TAG, "Hardware AcousticEchoCanceler ENABLED on session $audioSessionId")
+                }
+            } else {
+                Log.w(TAG, "Hardware AcousticEchoCanceler NOT available on this device")
+            }
+
+            if (NoiseSuppressor.isAvailable()) {
+                noiseSuppressor = NoiseSuppressor.create(audioSessionId)?.apply {
+                    enabled = true
+                    Log.i(TAG, "Hardware NoiseSuppressor ENABLED on session $audioSessionId")
+                }
+            }
+
             if (AutomaticGainControl.isAvailable()) {
                 gainControl = AutomaticGainControl.create(audioSessionId)?.apply {
                     enabled = true
-                    Log.i(TAG, "Hardware AutomaticGainControl enabled on session $audioSessionId")
+                    Log.i(TAG, "Hardware AutomaticGainControl ENABLED on session $audioSessionId")
                 }
             }
         } catch (e: Exception) {
-            Log.e(TAG, "Error initializing AGC: ${e.message}", e)
+            Log.e(TAG, "Error initializing hardware audio effects: ${e.message}", e)
         }
     }
 
@@ -386,12 +401,14 @@ class DomainExpandersInCallService : InCallService() {
 
             val audioManager = getSystemService(Context.AUDIO_SERVICE) as? AudioManager
             val maxVoice = audioManager?.getStreamMaxVolume(AudioManager.STREAM_VOICE_CALL) ?: 15
-            audioManager?.setStreamVolume(AudioManager.STREAM_VOICE_CALL, maxVoice, 0)
+            // Set in-call volume to ~55-60% to prevent acoustic earbud blowout into microphone capsule
+            val safeVoiceVol = (maxVoice * 0.55f).toInt().coerceAtLeast(1)
+            audioManager?.setStreamVolume(AudioManager.STREAM_VOICE_CALL, safeVoiceVol, 0)
             val maxMusic = audioManager?.getStreamMaxVolume(AudioManager.STREAM_MUSIC) ?: 15
             audioManager?.setStreamVolume(AudioManager.STREAM_MUSIC, maxMusic, 0)
 
             audioTrack?.play()
-            Log.i(TAG, "AudioTrack initialized and playing at 24kHz PCM at MAX volume.")
+            Log.i(TAG, "AudioTrack initialized and playing at 24kHz PCM (Voice vol: $safeVoiceVol / $maxVoice).")
         } catch (e: Exception) {
             Log.e(TAG, "Error initializing AudioTrack: ${e.message}", e)
         }
@@ -424,8 +441,10 @@ class DomainExpandersInCallService : InCallService() {
                     AudioFormat.ENCODING_PCM_16BIT
                 )
 
+                // VOICE_COMMUNICATION is Android's official VoIP/Telephony audio pipeline.
+                // It natively enables hardware Acoustic Echo Cancellation (AEC) and avoids Google Voice Recognition mute timeouts.
                 audioRecord = AudioRecord(
-                    MediaRecorder.AudioSource.VOICE_RECOGNITION,
+                    MediaRecorder.AudioSource.VOICE_COMMUNICATION,
                     SAMPLE_RATE_IN,
                     AudioFormat.CHANNEL_IN_MONO,
                     AudioFormat.ENCODING_PCM_16BIT,
@@ -437,10 +456,12 @@ class DomainExpandersInCallService : InCallService() {
                 }
 
                 audioRecord?.startRecording()
-                Log.i(TAG, "AudioRecord started at 16kHz PCM (VOICE_RECOGNITION).")
+                Log.i(TAG, "AudioRecord started at 16kHz PCM (VOICE_COMMUNICATION).")
 
                 val highPassFilter = BiquadHighPassFilter()
                 val buffer = ByteArray(BUFFER_SIZE)
+                var lastMeterReportTime = 0L
+
                 while (isActive && isStreaming) {
                     val readBytes = audioRecord?.read(buffer, 0, buffer.size) ?: 0
                     if (readBytes > 0) {
@@ -453,9 +474,16 @@ class DomainExpandersInCallService : InCallService() {
                         val filteredPayload = highPassFilter.process(rawPayload)
                         val rms = calculateRms(filteredPayload)
 
+                        // Periodic live telemetry to WebSocket (every 300ms) for web dashboard live monitor
+                        val now = System.currentTimeMillis()
+                        if (now - lastMeterReportTime > 300L) {
+                            lastMeterReportTime = now
+                            ws.send("{\"type\": \"audio_meter\", \"rms\": ${rms.toInt()}, \"ai_speaking\": ${isAiSpeaking()}}")
+                        }
+
                         // 3. Acoustic Echo Gate: While AI is speaking, suppress loopback unless caller actively interrupts
                         if (isAiSpeaking()) {
-                            if (rms > 2500.0) {
+                            if (rms > 1800.0) {
                                 Log.i(TAG, "High-energy caller barge-in detected over AI speech (RMS: $rms). Sending interrupt...")
                                 ws.send("{\"type\": \"interrupt\"}")
                             } else {
@@ -463,8 +491,8 @@ class DomainExpandersInCallService : InCallService() {
                             }
                         }
 
-                        // 4. Calibrated Noise Gate: 50Hz hum is ~85 RMS after filter. Threshold 240 RMS eliminates 100% of hum
-                        if (rms < 240.0) {
+                        // 4. Calibrated Noise Gate: 50Hz hum is ~85 RMS after filter. Threshold 88.0 allows caller's voice (100-160 RMS) to stream cleanly!
+                        if (rms < 88.0) {
                             continue
                         }
 
@@ -481,6 +509,10 @@ class DomainExpandersInCallService : InCallService() {
     private fun stopAudioBridge() {
         isStreaming = false
         try {
+            echoCanceler?.release()
+            echoCanceler = null
+            noiseSuppressor?.release()
+            noiseSuppressor = null
             gainControl?.release()
             gainControl = null
 

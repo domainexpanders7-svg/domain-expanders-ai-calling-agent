@@ -353,6 +353,45 @@ async def browser_websocket(websocket: WebSocket):
         await live_engine.close_session()
 
 # -------------------------------------------------------------
+# Active Live GSM Call Monitors (Web View clients)
+# -------------------------------------------------------------
+active_monitors: set = set()
+current_live_call: Optional[Dict[str, Any]] = None
+
+async def broadcast_to_monitors(event_data: dict):
+    """Broadcasts GSM call events, live transcripts, and audio telemetry to all connected web views."""
+    dead_monitors = set()
+    for ws in list(active_monitors):
+        try:
+            await ws.send_json(event_data)
+        except Exception:
+            dead_monitors.add(ws)
+    for ws in dead_monitors:
+        active_monitors.discard(ws)
+
+@app.websocket("/ws/monitor")
+async def live_call_monitor_ws(websocket: WebSocket):
+    """Real-time live call transcript and audio meter stream for web dashboard."""
+    await websocket.accept()
+    active_monitors.add(websocket)
+    try:
+        if current_live_call:
+            await websocket.send_json({
+                "type": "call_active",
+                "call": current_live_call
+            })
+        else:
+            await websocket.send_json({
+                "type": "call_idle"
+            })
+        while True:
+            await websocket.receive_text()
+    except WebSocketDisconnect:
+        active_monitors.discard(websocket)
+    except Exception:
+        active_monitors.discard(websocket)
+
+# -------------------------------------------------------------
 # Android Phone Telephony Bridge WebSocket (/ws/call)
 # -------------------------------------------------------------
 @app.websocket("/ws/call")
@@ -363,6 +402,7 @@ async def telephony_bridge_websocket(websocket: WebSocket):
     - Streams native 24kHz PCM voice from Gemini Live Speech-to-Speech engine.
     - Full-duplex bidirectional audio: zero lag, instant natural interruptions.
     """
+    global current_live_call
     await websocket.accept()
     logger.info("Android GSM Phone Bridge connected.")
     agent = ConversationEngine()
@@ -388,11 +428,17 @@ async def telephony_bridge_websocket(websocket: WebSocket):
                             raw_pcm = part.inline_data.data
                             await websocket.send_bytes(raw_pcm)
 
-                # 2. Live Transcript for logs & analytics
+                # 2. Live Transcript for logs, analytics & real-time Web Monitor
                 if server_content.output_transcription and server_content.output_transcription.text:
                     txt = scrub_secrets(server_content.output_transcription.text)
                     current_agent_turn_text.append(txt)
                     await websocket.send_json({
+                        "type": "transcript",
+                        "role": "agent",
+                        "text": txt
+                    })
+                    # Broadcast immediately to live web dashboard
+                    await broadcast_to_monitors({
                         "type": "transcript",
                         "role": "agent",
                         "text": txt
@@ -451,12 +497,33 @@ async def telephony_bridge_websocket(websocket: WebSocket):
                     greeting = agent.get_initial_greeting()
                     greeting = scrub_secrets(greeting)
 
+                    current_live_call = {
+                        "caller_phone": caller_phone,
+                        "client_name": caller_context.get("client_name") if caller_context else None,
+                        "returning_client": bool(caller_context),
+                        "status": "connected"
+                    }
+
+                    # Broadcast call start to web view
+                    await broadcast_to_monitors({
+                        "type": "call_start",
+                        "caller_phone": caller_phone,
+                        "client_name": caller_context.get("client_name") if caller_context else None,
+                        "returning_client": bool(caller_context)
+                    })
+
                     await websocket.send_json({
                         "type": "transcript",
                         "role": "agent",
                         "text": greeting,
                         "returning_client": bool(caller_context),
                         "client_name": caller_context.get("client_name") if caller_context else None
+                    })
+
+                    await broadcast_to_monitors({
+                        "type": "transcript",
+                        "role": "agent",
+                        "text": greeting
                     })
 
                     # Trigger Gemini Live to speak greeting immediately
@@ -466,8 +533,22 @@ async def telephony_bridge_websocket(websocket: WebSocket):
                         except Exception as ge:
                             logger.warning(f"Error triggering S2S initial greeting: {ge}")
 
+                elif event.get("type") == "audio_meter":
+                    # Broadcast live RMS level and activity to web dashboard
+                    rms = event.get("rms", 0)
+                    ai_speaking = event.get("ai_speaking", False)
+                    await broadcast_to_monitors({
+                        "type": "audio_meter",
+                        "rms": rms,
+                        "ai_speaking": ai_speaking,
+                        "caller_speaking": (rms > 88 and not ai_speaking)
+                    })
+
                 elif event.get("type") == "interrupt":
                     logger.info(f"Caller interrupted AI speech during GSM call for {caller_phone}.")
+                    await broadcast_to_monitors({
+                        "type": "caller_interrupt"
+                    })
 
                 elif event.get("type") == "hangup":
                     logger.info(f"Call hangup event received from Android for {caller_phone}. Extracting lead data...")
@@ -476,6 +557,12 @@ async def telephony_bridge_websocket(websocket: WebSocket):
                         lead_manager.save_lead(agent.extracted_lead)
                     if caller_phone:
                         memory_manager.save_caller_memory(caller_phone, agent.extracted_lead)
+                    current_live_call = None
+                    await broadcast_to_monitors({
+                        "type": "call_end",
+                        "caller_phone": caller_phone,
+                        "lead": agent.extracted_lead
+                    })
                     break
 
             elif "bytes" in msg:
@@ -493,6 +580,12 @@ async def telephony_bridge_websocket(websocket: WebSocket):
 
     except WebSocketDisconnect:
         logger.info(f"Android GSM Bridge disconnected for {caller_phone}. Saving final memory...")
+        current_live_call = None
+        await broadcast_to_monitors({
+            "type": "call_end",
+            "caller_phone": caller_phone,
+            "reason": "Disconnected"
+        })
         try:
             await agent.update_extracted_entities()
             if agent.extracted_lead and (agent.extracted_lead.get("service_interest") or agent.extracted_lead.get("company_name") or agent.extracted_lead.get("budget")):
@@ -503,7 +596,14 @@ async def telephony_bridge_websocket(websocket: WebSocket):
             logger.debug(f"Disconnect memory save note: {ex}")
     except Exception as e:
         logger.error(f"GSM Bridge error: {e}")
+        current_live_call = None
+        await broadcast_to_monitors({
+            "type": "call_end",
+            "caller_phone": caller_phone,
+            "error": str(e)
+        })
     finally:
+        current_live_call = None
         if receiver_task:
             receiver_task.cancel()
         await live_engine.close_session()

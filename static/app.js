@@ -900,8 +900,132 @@ window.addEventListener('keydown', (e) => {
   }
 });
 
+// -------------------------------------------------------------
+// Real-Time GSM Phone Call Telephony Monitor (Real SIM Calls)
+// -------------------------------------------------------------
+let monitorWs = null;
+let isGsmCallActive = false;
+let gsmCallTimerInterval = null;
+let gsmCallSeconds = 0;
+
+function initMonitorWebSocket() {
+  const protocol = window.location.protocol === 'https:' ? 'wss:' : 'ws:';
+  const monitorUrl = `${protocol}//${window.location.host}/ws/monitor`;
+
+  try {
+    monitorWs = new WebSocket(monitorUrl);
+
+    monitorWs.onopen = () => {
+      console.log('🔴 Live GSM Telephony Observer connected to server.');
+    };
+
+    monitorWs.onmessage = (event) => {
+      try {
+        const data = JSON.parse(event.data);
+        handleMonitorEvent(data);
+      } catch (e) {
+        console.error('Failed to parse monitor event:', e);
+      }
+    };
+
+    monitorWs.onclose = () => {
+      setTimeout(initMonitorWebSocket, 2000);
+    };
+  } catch (e) {
+    setTimeout(initMonitorWebSocket, 3000);
+  }
+}
+
+function handleMonitorEvent(data) {
+  if (!data || !data.type) return;
+
+  switch (data.type) {
+    case 'call_active':
+      if (data.call) {
+        handleMonitorEvent({
+          type: 'call_start',
+          caller_phone: data.call.caller_phone,
+          client_name: data.call.client_name,
+          returning_client: data.call.returning_client
+        });
+      }
+      break;
+
+    case 'call_start':
+      isGsmCallActive = true;
+      gsmCallSeconds = 0;
+      clearInterval(gsmCallTimerInterval);
+      gsmCallTimerInterval = setInterval(() => {
+        gsmCallSeconds++;
+        const mins = String(Math.floor(gsmCallSeconds / 60)).padStart(2, '0');
+        const secs = String(gsmCallSeconds % 60).padStart(2, '0');
+        callTimer.textContent = `${mins}:${secs}`;
+      }, 1000);
+
+      connectionDot.className = 'status-dot connected';
+      connectionStatus.innerHTML = `<span style="color:#10b981; font-weight:bold;">🔴 LIVE GSM CALL: ${data.caller_phone}</span>`;
+      audioStateText.innerHTML = `📞 <strong style="color:#00f0ff;">LIVE SIM CALL ACTIVE</strong>: ${data.caller_phone}`;
+      pulseRing.classList.add('active');
+
+      const banner = document.createElement('div');
+      banner.style.cssText = 'background: rgba(16,185,129,0.15); border: 1px solid #10b981; color: #10b981; padding: 8px 12px; border-radius: 8px; margin-bottom: 12px; font-weight: 600; text-align: center; font-size: 13px;';
+      banner.textContent = `🟢 Real GSM Phone Call Connected: ${data.caller_phone} (${data.returning_client ? 'Returning Client' : 'New Prospect'})`;
+      transcriptBox.appendChild(banner);
+      if (emptyTranscript) emptyTranscript.style.display = 'none';
+      transcriptBox.scrollTop = transcriptBox.scrollHeight;
+      break;
+
+    case 'transcript':
+      if (emptyTranscript) emptyTranscript.style.display = 'none';
+      appendMessage(data.role, data.text);
+      break;
+
+    case 'audio_meter':
+      if (isGsmCallActive) {
+        const rms = data.rms || 0;
+        const callerSpeaking = data.caller_speaking;
+        const aiSpeaking = data.ai_speaking;
+
+        if (callerSpeaking) {
+          audioStateText.innerHTML = `🎙️ <strong style="color:#22c55e;">Caller Speaking</strong> (Mic RMS: <span style="color:#22c55e; font-weight:bold;">${rms}</span>)`;
+          pulseRing.classList.add('active');
+        } else if (aiSpeaking) {
+          audioStateText.innerHTML = `🤖 <strong style="color:#00f0ff;">Sneha Speaking</strong> to Caller (Playing on Earphone)`;
+          pulseRing.classList.add('active');
+        } else {
+          audioStateText.innerHTML = `📞 Live Call Active (Mic RMS: <span style="color:#94a3b8;">${rms}</span> - Quiet)`;
+          pulseRing.classList.remove('active');
+        }
+      }
+      break;
+
+    case 'caller_interrupt':
+      audioStateText.innerHTML = `⚡ <span style="color:#f59e0b; font-weight:bold;">Caller Interrupted Sneha!</span>`;
+      break;
+
+    case 'call_end':
+      isGsmCallActive = false;
+      clearInterval(gsmCallTimerInterval);
+      pulseRing.classList.remove('active');
+      connectionStatus.textContent = 'Server Connected (Idle)';
+      audioStateText.textContent = `Call disconnected (${data.caller_phone || 'Completed'}).`;
+
+      const endBanner = document.createElement('div');
+      endBanner.style.cssText = 'background: rgba(239,68,68,0.15); border: 1px solid #ef4444; color: #ef4444; padding: 8px 12px; border-radius: 8px; margin-top: 12px; font-weight: 600; text-align: center; font-size: 13px;';
+      endBanner.textContent = `🔴 GSM Call Ended (${data.caller_phone || 'Call finished'}). Lead intelligence recorded.`;
+      transcriptBox.appendChild(endBanner);
+      transcriptBox.scrollTop = transcriptBox.scrollHeight;
+
+      if (data.lead) {
+        updateLeadCard(data.lead);
+      }
+      break;
+  }
+}
+
 window.addEventListener('load', () => {
   visualizerCanvas.width = visualizerCanvas.offsetWidth;
   visualizerCanvas.height = visualizerCanvas.offsetHeight;
   initWebSocket();
+  initMonitorWebSocket();
 });
